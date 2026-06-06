@@ -45,7 +45,7 @@
       <button id="connectBtn" class="primary">Connect to copycat</button>
       <span id="connState" class="pill dn">disconnected</span>
     </div>
-    <p class="note">If nothing appears in the device picker, the copycat may be busy (quit any app holding it) or needs a replug. Serve this page over <code>http://localhost</code> (e.g. <code>python3 -m http.server 8008</code>) — WebUSB needs a secure context.</p>
+    <p class="note">If nothing appears in the device picker, the copycat may be busy (quit any app holding it) or needs a replug.</p>
   </div>
 
   <div id="panel" class="hide">
@@ -78,25 +78,6 @@
       <div class="row"><label>Poll interval</label><input type="range" id="pollUs" min="1" max="120" step="1"><span class="val" id="pollUsV"></span></div>
       <p class="note">Microseconds between RF polls (×100). Lower = poll harder = more fresh reports/s (peaks ~60/s near 700&nbsp;µs). Too aggressive can collapse the reply rate during heavy trackpad use — watch the “New reports” stat and trackpad feel as you tune.</p>
     </div>
-
-    <div class="card">
-      <h2>Steam-mode report dedupe</h2>
-      <div class="row"><label>Forward only new</label>
-        <button id="fwdNew">on</button>
-        <span class="note" style="flex:1">Only send report 0x45 to Steam when the data actually changed (like the real puck).</span>
-      </div>
-      <p class="note">We were sending ~400 stale-repeat reports/s on top of ~100 real ones — Steam's trackpad smoothing stair-steps on the duplicates. ON = dedupe (puck-like). Toggle OFF to compare the old jittery behavior.</p>
-    </div>
-
-    <div class="card">
-      <h2>QoS adaptive channel hopping</h2>
-      <div class="row"><label>Auto-hop</label>
-        <button id="qos">off</button>
-        <span class="note" style="flex:1">When the RF link degrades (crcfail/no-reply spikes during trackpad), hop to a clean channel — like the real puck.</span>
-      </div>
-      <p class="note">Candidates {18,46,76,22,68}. Conservative (hops at most every ~2s) to avoid blip-storms; each hop has a brief ~0.5–1s re-sync blip. A/B it during heavy trackpad — watch crcfail and the feel.</p>
-    </div>
-
 
     <div class="card" id="mouseCard">
       <h2>Trackpad mouse (lizard + Xbox)</h2>
@@ -196,7 +177,7 @@ function applyBlob(p){
   // [ver][mode][mDiv][mFric][padSmooth][abSwap][b0..b3][slot][up][f1lo][f1hi][pollU100][newlo][newhi]
   const mode=p[1], mDiv=p[2], mFric=p[3], padSmooth=p[4], abSwap=p[5];
   const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
-  const pollU100=p[14], newps=(p.length>16?(p[15]|(p[16]<<8)):0), fwdNew=(p.length>20?p[20]:1), qos=(p.length>21?p[21]:0), persistMode=(p.length>22?p[22]:0);
+  const pollU100=p[14], newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
   // mode buttons
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = mode===1?1:0.5;
@@ -210,8 +191,6 @@ function applyBlob(p){
   setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("padSmooth",padSmooth);
   if(pollU100) setSlider("pollUs",pollU100);
   $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
-  $("#fwdNew").textContent = fwdNew? "on":"off"; $("#fwdNew").classList.toggle("active",!!fwdNew);
-  $("#qos").textContent = qos? "on":"off"; $("#qos").classList.toggle("active",!!qos);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
 }
@@ -235,8 +214,6 @@ async function startPolling(){
 // UI wiring
 $("#connectBtn").onclick=connect;
 $("#abSwap").onclick=()=>{ const on=$("#abSwap").classList.contains("active"); setField(4, on?0:1); };
-$("#fwdNew").onclick=()=>{ const on=$("#fwdNew").classList.contains("active"); setField(14, on?0:1); };
-$("#qos").onclick=()=>{ const on=$("#qos").classList.contains("active"); setField(15, on?0:1); };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 for(const id of ["mDiv","mFric","padSmooth","pollUs"]){
   const field={mDiv:1,mFric:2,padSmooth:3,pollUs:9}[id];
