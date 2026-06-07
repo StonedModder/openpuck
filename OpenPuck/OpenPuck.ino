@@ -202,6 +202,16 @@ static volatile uint8_t g_testHaptic = 0;   // 't<n>' injects n test haptics (ou
 static unsigned long g_haptic82Ms = 0;            // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false;        // a non-zero 0x82 haptic is currently active (awaiting host stop)
 static volatile uint8_t g_hapticStop = 0;         // pending haptic-STOP frames to relay: the controller's haptic LATCHES until told to stop, so when the host's stop is lost over RF (or goes silent, or we reconnect) we actively send 0x82-zero a few times to kill the whine
+// ---- diagnostic capture: a ring of the last OUTPUT reports Steam sends (rid/slot/bytes/ms), dumped with 'H'.
+// Reproduce the whine, press Steam to stop it, then 'H' to see the ON stream + the exact OFF frame Steam sends.
+struct HapLog { uint32_t ms; uint8_t slot, rid, n, b[12]; };
+static HapLog  g_hapLog[28];
+static uint8_t g_hapHead = 0;
+static void hapLogAdd(uint8_t slot, uint8_t rid, const uint8_t* b, uint16_t n){
+  HapLog &e = g_hapLog[g_hapHead]; e.ms = millis(); e.slot = slot; e.rid = rid; e.n = (uint8_t)(n>255?255:n);
+  for(int i=0;i<12;i++) e.b[i] = (i<(int)n) ? b[i] : 0;
+  g_hapHead = (uint8_t)((g_hapHead+1) % (sizeof g_hapLog / sizeof g_hapLog[0]));
+}
 static unsigned long g_hapticBlockUntil = 0;        // drop Steam haptics briefly during reconnect settle
 #define RUMBLE_STUCK_MS   2500u   // Xbox: release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
 #define HAPTIC_QUIET_MS    300u   // Steam: after this much host silence, consider the current 0x82 haptic stream inactive
@@ -297,6 +307,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
     // the controller, and ONLY when it arrives on the CONNECTED slot's interface. We have one controller but
     // expose 4 puck slots; forwarding the other 0x80-0x89 reports (LED/config), or a haptic Steam aimed at a
     // different slot, made the controller buzz at random. The real puck (4 independent slots) never does that.
+    if (rid >= 0x80 && rid <= 0x89) hapLogAdd((uint8_t)slot, rid, b, n);   // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
     if (rid == 0x82 && n >= 1 && slot == g_connSlot) {          // wrap as a SET sub-TLV like the report-01 path
       if (!haptic82Blocked()) {
         uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
@@ -318,6 +329,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   const uint8_t *pl = b + 2; uint16_t pln = (n >= 2) ? n - 2 : 0;
   if (cmd == 0x87) g_steamAliveMs = millis();   // Steam's settings/lizard-off heartbeat (~every 3s) -> keep forwarding gamepad, suppress auto-lizard
   if (rid == 1 && n >= 2) {   // report 0x01 = raw passthrough -> queue for RF relay to the controller
+    if (cmd >= 0x80 && cmd <= 0x89) hapLogAdd((uint8_t)slot, cmd, b, n);   // capture feature-passthrough haptics/LED too (rid shown = cmd; bytes start [cmd][len]...)
     bool haptic82 = (cmd == 0x82 && len <= pln);
     if (!haptic82 || !haptic82Blocked()) {
       uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
@@ -1314,6 +1326,13 @@ static void rfSerialPoll(){
       else if (line[0]=='e'){ g_e3mode=strtoul(line+1,0,10); Serial.printf("# E3 poll PID mode=%u (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0) - watch new=/s\n",g_e3mode); }
       else if (line[0]=='t'){ uint8_t n=line[1]?strtoul(line+1,0,10):40;     // inject n test haptics (output 0x82 [01 01 F7]) over the relay
         g_testHaptic=n; Serial.printf("# test-haptic burst x%u queued (relay 0x82 01 01 F7 via op=%02X sub=%02X)\n",n,g_relayOp,g_relaySub); }
+      else if (line[0]=='H'){   // dump the captured OUTPUT-report history (oldest->newest) for the haptic-whine hunt
+        const uint8_t N=sizeof g_hapLog/sizeof g_hapLog[0]; uint32_t now=millis();
+        Serial.printf("# --- haptic/OUTPUT history (now=%lu, connSlot=%d) ---\n",(unsigned long)now,g_connSlot);
+        for(uint8_t i=0;i<N;i++){ HapLog &e=g_hapLog[(g_hapHead+i)%N]; if(!e.ms && !e.rid) continue;
+          Serial.printf("# -%lums if%u rid=%02X n=%u:",(unsigned long)(now-e.ms),e.slot,e.rid,e.n);
+          for(uint8_t j=0;j<12 && j<e.n;j++) Serial.printf(" %02X",e.b[j]); Serial.println(); }
+        Serial.println("# --- end ---"); }
       else if (line[0]=='j'){ g_connType=strtoul(line+1,0,16); Serial.printf("# connType=%02X\n",g_connType); }
       else if (line[0]=='Q'){ g_connLen=strtoul(line+1,0,16); Serial.printf("# connLen=%02X\n",g_connLen); }
       else if (line[0]=='A'){ g_balen=strtoul(line+1,0,16); g_pcnf1=0; Serial.printf("# balen=%u\n",g_balen); }
