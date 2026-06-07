@@ -201,6 +201,17 @@ static volatile uint8_t g_testHaptic = 0;   // 't<n>' injects n test haptics (ou
 // can likewise latch on the controller if Steam's stop relay is lost. We auto-release on host silence.
 static unsigned long g_haptic82Ms = 0;            // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false;        // a non-zero 0x82 haptic is currently active (awaiting host stop)
+static volatile uint8_t g_hapticStop = 0;         // pending haptic-STOP frames to relay: the controller's haptic LATCHES until told to stop, so when the host's stop is lost over RF (or goes silent, or we reconnect) we actively send 0x82-zero a few times to kill the whine
+// ---- diagnostic capture: a ring of the last OUTPUT reports Steam sends (rid/slot/bytes/ms), dumped with 'H'.
+// Reproduce the whine, press Steam to stop it, then 'H' to see the ON stream + the exact OFF frame Steam sends.
+struct HapLog { uint32_t ms; uint8_t slot, rid, n, b[12]; };
+static HapLog  g_hapLog[28];
+static uint8_t g_hapHead = 0;
+static void hapLogAdd(uint8_t slot, uint8_t rid, const uint8_t* b, uint16_t n){
+  HapLog &e = g_hapLog[g_hapHead]; e.ms = millis(); e.slot = slot; e.rid = rid; e.n = (uint8_t)(n>255?255:n);
+  for(int i=0;i<12;i++) e.b[i] = (i<(int)n) ? b[i] : 0;
+  g_hapHead = (uint8_t)((g_hapHead+1) % (sizeof g_hapLog / sizeof g_hapLog[0]));
+}
 static unsigned long g_hapticBlockUntil = 0;        // drop Steam haptics briefly during reconnect settle
 #define RUMBLE_STUCK_MS   2500u   // Xbox: release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
 #define HAPTIC_QUIET_MS    300u   // Steam: after this much host silence, consider the current 0x82 haptic stream inactive
@@ -285,20 +296,25 @@ static bool haptic82PayloadOn(const uint8_t* p, uint16_t n){
 static void haptic82HostReport(const uint8_t* p, uint16_t n){
   if(n<3) return;
   g_haptic82Ms = millis();
-  g_haptic82On = haptic82PayloadOn(p,n);
+  bool nowOn = haptic82PayloadOn(p,n);
+  if(g_haptic82On && !nowOn) g_hapticStop = 4;   // host commanded stop -> resend it a few times (one RF frame can be lost)
+  g_haptic82On = nowOn;
 }
 
 // ---- command channel; `slot` is the interface index (interface N == bond slot N) ----
 static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t const *b, uint16_t n) {
-  if (type == HID_REPORT_TYPE_OUTPUT) {   // Steam haptic/LED OUTPUT reports 0x80-0x89 -> relay to controller
-    if (rid >= 0x80 && rid <= 0x89 && n >= 1) {                 // wrap as a SET sub-TLV like the report-01 path
-      bool haptic82 = (rid == 0x82);
-      if (!haptic82 || !haptic82Blocked()) {
+  if (type == HID_REPORT_TYPE_OUTPUT) {   // Steam OUTPUT reports 0x80-0x89. ONLY the haptic (0x82) is relayed to
+    // the controller, and ONLY when it arrives on the CONNECTED slot's interface. We have one controller but
+    // expose 4 puck slots; forwarding the other 0x80-0x89 reports (LED/config), or a haptic Steam aimed at a
+    // different slot, made the controller buzz at random. The real puck (4 independent slots) never does that.
+    if (rid >= 0x80 && rid <= 0x89) hapLogAdd((uint8_t)slot, rid, b, n);   // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
+    if (rid == 0x82 && n >= 1 && slot == g_connSlot) {          // wrap as a SET sub-TLV like the report-01 path
+      if (!haptic82Blocked()) {
         uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
         g_relayBuf[0] = rid; g_relayBuf[1] = m; memcpy(g_relayBuf + 2, b, m);
         g_relayN = m + 2; g_relayPend = true;
       }
-      if (haptic82) haptic82HostReport(b, n);  // track on/off for the stuck-haptic watchdog
+      haptic82HostReport(b, n);  // track on/off for the stuck-haptic watchdog
     }
     if (Serial.availableForWrite() > 80) {                      // log so we can see what Steam actually sends (e.g. glide haptics)
       Serial.printf("# OUT if%d rid=%02X n=%u:", slot, rid, n);
@@ -313,6 +329,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   const uint8_t *pl = b + 2; uint16_t pln = (n >= 2) ? n - 2 : 0;
   if (cmd == 0x87) g_steamAliveMs = millis();   // Steam's settings/lizard-off heartbeat (~every 3s) -> keep forwarding gamepad, suppress auto-lizard
   if (rid == 1 && n >= 2) {   // report 0x01 = raw passthrough -> queue for RF relay to the controller
+    if (cmd >= 0x80 && cmd <= 0x89) hapLogAdd((uint8_t)slot, cmd, b, n);   // capture feature-passthrough haptics/LED too (rid shown = cmd; bytes start [cmd][len]...)
     bool haptic82 = (cmd == 0x82 && len <= pln);
     if (!haptic82 || !haptic82Blocked()) {
       uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
@@ -976,7 +993,9 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
         while(idx+1<end){                               // mod-256 back to itself -> infinite loop -> USB hang/"crash".
           uint8_t tlen=rfrx[idx], ttype=rfrx[idx+1];    // pace with the real puck — taking only [0] halved our rate.
           if(tlen==0) break;
-          if(ttype==6 && tlen>=2 && rfrx[idx+2]==0x45){
+          // Only a FULL 0x45 report that fits entirely in rfrx: a short or late/garbled TLV must not let the
+          // decode read — or smoothPad WRITE rep[18..27] — past the RF buffer (corrupts rftx/RAM -> eventual crash).
+          if(ttype==6 && tlen>=28 && (size_t)(idx+2)+tlen<=sizeof(rfrx) && rfrx[idx+2]==0x45){
             const uint8_t* rep=&rfrx[idx+2];            // report 0x45: [0x45][seq][buttons u32]...
             bool fresh=(rep[1]!=g_lastSeq); if(fresh){ g_stNew++; g_lastSeq=rep[1]; }  // genuine new report vs stale poll-repeat
             uint32_t bb=btnsOf(rep);
@@ -1053,6 +1072,9 @@ static void rfConnStep(){
     if((g_connPoll & 0x1F)==0){ uint8_t pa[3]={0xE7,0x00,g_e7b}; rfConnTx(ch,0x01,pa,3); }   // re-assert awake/version
     if(!g_relayPend && g_testHaptic){                // buzz-hunt: synthesize a haptic relay (output 0x82 [01 01 F7])
       g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0xF7; g_relayPend=true; g_testHaptic--;
+    }
+    if(!g_relayPend && g_hapticStop && !g_xbox){     // kill a latched haptic: relay 0x82 [01 01 00] (zero gain = stop), a few times to beat RF loss
+      g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0x00; g_relayPend=true; g_hapticStop--;
     }
     if(g_relayPend){                                 // relay host cmd: [op][len][sub][rid][payload] (op/sub tunable for the buzz hunt)
       uint8_t rid=g_relayBuf[0], rl=g_relayBuf[1]; if(rl>18)rl=18;
@@ -1304,6 +1326,13 @@ static void rfSerialPoll(){
       else if (line[0]=='e'){ g_e3mode=strtoul(line+1,0,10); Serial.printf("# E3 poll PID mode=%u (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0) - watch new=/s\n",g_e3mode); }
       else if (line[0]=='t'){ uint8_t n=line[1]?strtoul(line+1,0,10):40;     // inject n test haptics (output 0x82 [01 01 F7]) over the relay
         g_testHaptic=n; Serial.printf("# test-haptic burst x%u queued (relay 0x82 01 01 F7 via op=%02X sub=%02X)\n",n,g_relayOp,g_relaySub); }
+      else if (line[0]=='H'){   // dump the captured OUTPUT-report history (oldest->newest) for the haptic-whine hunt
+        const uint8_t N=sizeof g_hapLog/sizeof g_hapLog[0]; uint32_t now=millis();
+        Serial.printf("# --- haptic/OUTPUT history (now=%lu, connSlot=%d) ---\n",(unsigned long)now,g_connSlot);
+        for(uint8_t i=0;i<N;i++){ HapLog &e=g_hapLog[(g_hapHead+i)%N]; if(!e.ms && !e.rid) continue;
+          Serial.printf("# -%lums if%u rid=%02X n=%u:",(unsigned long)(now-e.ms),e.slot,e.rid,e.n);
+          for(uint8_t j=0;j<12 && j<e.n;j++) Serial.printf(" %02X",e.b[j]); Serial.println(); }
+        Serial.println("# --- end ---"); }
       else if (line[0]=='j'){ g_connType=strtoul(line+1,0,16); Serial.printf("# connType=%02X\n",g_connType); }
       else if (line[0]=='Q'){ g_connLen=strtoul(line+1,0,16); Serial.printf("# connLen=%02X\n",g_connLen); }
       else if (line[0]=='A'){ g_balen=strtoul(line+1,0,16); g_pcnf1=0; Serial.printf("# balen=%u\n",g_balen); }
@@ -1383,9 +1412,18 @@ void setup() {
   for (int i=0; i<300 && !USBDevice.mounted(); i++) delay(10);   // wait up to 3s for USB mount, but NEVER hang:
   loadBonds();                                                   // if a mode fails to enumerate, still run loop() so RF + the back-paddle mode chord keep working (can always switch back)
   Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, g_usbMode==1?"XBOX(controller+mouse)":g_usbMode==2?"SWITCH(pro controller)":"STEAM(puck; auto-lizard when Steam closed)");
+  // Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked
+  // CDC write) the WDT resets the nRF52 after ~8s — re-enumerating USB and re-initialising RF on its own, so a
+  // hang no longer needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.
+  // 8s is far above any legitimate stall (flash writes are tens of ms) and leaves the bootloader room on DFU.
+  NRF_WDT->CONFIG  = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) | (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV     = 8UL * 32768UL - 1;     // timeout in 32.768 kHz ticks (~8 s)
+  NRF_WDT->RREN    = WDT_RREN_RR0_Msk;       // arm reload register 0
+  NRF_WDT->TASKS_START = 1;
 }
 
 void loop() {
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;   // feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
   if (g_dirty) { g_dirty = false; saveBonds(); }
   webusbPoll();
   swStream();        // SWITCH mode: stream 0x30 input reports once the host enabled mode 0x30
@@ -1417,7 +1455,7 @@ void loop() {
   if (g_connOn && millis()-g_connCooldown > 2500) { rfConnStep(); }            // connected-mode: poll controller, read input
   { static bool wasHapticLinkUp=false;
     bool up=hapticLinkUp();
-    if(up && !wasHapticLinkUp) g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // reconnect hygiene: don't replay Steam's stale startup haptics
+    if(up && !wasHapticLinkUp){ g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS; g_hapticStop=4; }   // reconnect: drop Steam's stale startup haptics AND clear any haptic that latched on the controller before/across the switch (the "whine until Steam button" on entering Steam mode)
     wasHapticLinkUp=up;
   }
   // Legacy XInput rumble -> relay the haptic (0x82 [01 01 gain]) to the controller while the host commands it,
@@ -1432,7 +1470,7 @@ void loop() {
   }
   // Steam-mode haptic guard: do not synthesize haptic packets. The reconnect guard above only drops stale
   // host 0x82 traffic until the link is stable; active-session haptics are relayed verbatim.
-  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) g_haptic82On=false;
+  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) { g_haptic82On=false; g_hapticStop=4; }  // host went silent mid-haptic (its stop was lost / never sent) -> actively stop the latched buzz
   // QoS: if the current channel is degrading (crcfail+noRx), hop to the next clean candidate (conservative).
   if (g_qos && g_connSlot>=0 && millis()-g_qosCheckMs>=600) {
     uint16_t bad=g_qosBad; g_qosBad=0; g_qosCheckMs=millis();
