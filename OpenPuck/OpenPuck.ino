@@ -240,6 +240,12 @@ static unsigned long g_hapticBlockUntil = 0;        // drop Steam haptics briefl
 static unsigned long g_steamAliveMs = 0;   // millis of last 0x87 settings write from Steam (its heartbeat); 0 at boot => lizard until Steam appears
 #define LIZARD_WD_MS 7000u          // fall back to lizard this long after the 0x87 heartbeat stops (>2x the 3s cadence, so one missed beat won't trip it mid-session)
 static bool g_autoLizard = true;    // master switch; false => Steam mode always forwards 0x45 (the prior behavior). Opening Steam also disables lizard instantly (its 0x87 heartbeat sets steamAlive).
+// Single source of truth for the seamless-lizard decision, shared by the USB input path AND the haptic relay
+// gate. Steam is "alive"/driving the gamepad while its OUTPUT/settings stream is recent; when it isn't, the
+// puck presents lizard. Gating haptics on this is what stops the buzz: if we ever relay a 0x82 to the
+// controller while presenting lizard (i.e. Steam isn't getting 0x45 back), Steam loops the same haptic.
+static inline bool steamDrivingGamepad(){ return g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS); }
+static inline bool lizardActive(){ return modeIsPuck(g_usbMode) && (g_usbMode==MODE_LIZARD || (g_autoLizard && !steamDrivingGamepad())); }
 #define BOND_FILE "/bonds.bin"
 static volatile bool g_dirty = false;
 static bool g_pairing = false;
@@ -325,9 +331,11 @@ static void hapticCancelPendingOn(){
 static void haptic82HostReport(const uint8_t* p, uint16_t n){
   if(n<3) return;
   g_haptic82Ms = millis();
-  bool nowOn = haptic82PayloadOn(p,n);
-  if(g_haptic82On && !nowOn) g_hapticStop = HAPTIC_STOP_BURST;
-  g_haptic82On = nowOn;
+  // Track on/off only. Do NOT synthesize a stop burst when Steam's own stop arrives: that stop is already
+  // forwarded verbatim, so adding 0x82-zero frames on top just makes the controller see the stop several times
+  // over. Each 0x82 is a discrete pad click, so the extra frames are exactly the spurious end-of-movement
+  // "click"/buzz that the real puck never produces. (Connect-time clearing still runs in loop().)
+  g_haptic82On = haptic82PayloadOn(p,n);
 }
 // Queue a pending host haptic / test-haptic / stop relay (runs inside the poll cadence — never at raw loop rate).
 static void rfConnQueueHapticRelay(){
@@ -353,8 +361,13 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
     // the controller, and ONLY when it arrives on the CONNECTED slot's interface. We have one controller but
     // expose 4 puck slots; forwarding the other 0x80-0x89 reports (LED/config), or a haptic Steam aimed at a
     // different slot, made the controller buzz at random. The real puck (4 independent slots) never does that.
-    if (rid >= 0x80 && rid <= 0x89) hapLogAdd((uint8_t)slot, rid, b, n);   // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
-    if (rid == 0x82 && n >= 1 && hapticRelaySlotOk(slot)) {       // wrap as a SET sub-TLV like the report-01 path
+    if (rid >= 0x80 && rid <= 0x89) {
+      hapLogAdd((uint8_t)slot, rid, b, n);   // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
+      g_steamAliveMs = millis();   // ANY Steam OUTPUT report (not just the 0x87 heartbeat) means Steam is present and
+                                   // driving -> leave lizard for gamepad NOW, so a haptic that arrives before the
+                                   // first 0x87 doesn't get relayed while we're still presenting lizard (-> buzz loop).
+    }
+    if (rid == 0x82 && n >= 1 && hapticRelaySlotOk(slot) && !lizardActive()) {  // wrap as a SET sub-TLV like the report-01 path
       if (!haptic82Blocked()) {
         uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
         g_relayBuf[0] = rid; g_relayBuf[1] = m; memcpy(g_relayBuf + 2, b, m);
@@ -373,11 +386,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   Slot &S = g_slot[slot];
   uint8_t cmd = b[0], len = (n > 1) ? b[1] : 0;
   const uint8_t *pl = b + 2; uint16_t pln = (n >= 2) ? n - 2 : 0;
-  if (cmd == 0x87) g_steamAliveMs = millis();   // Steam's settings/lizard-off heartbeat (~every 3s) -> keep forwarding gamepad, suppress auto-lizard
+  if (cmd >= 0x80 && cmd <= 0x89) g_steamAliveMs = millis();   // any Steam settings/haptic/LED report (incl. the 0x87 lizard-off heartbeat) -> Steam present, forward gamepad, suppress auto-lizard
   if (rid == 1 && n >= 2) {   // report 0x01 = raw passthrough -> queue for RF relay to the controller
     if (cmd >= 0x80 && cmd <= 0x89) hapLogAdd((uint8_t)slot, cmd, b, n);   // capture feature-passthrough haptics/LED too (rid shown = cmd; bytes start [cmd][len]...)
     bool haptic82 = (cmd == 0x82 && len <= pln);
-    bool relayOk = hapticRelaySlotOk(slot);
+    bool relayOk = hapticRelaySlotOk(slot) && !(haptic82 && lizardActive());  // never push haptics to the controller while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
     if (relayOk && (!haptic82 || !haptic82Blocked())) {
       uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
       memcpy(g_relayBuf, b, m); g_relayN = m; g_relayPend = true;
@@ -1464,8 +1477,7 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
             } else if(g_usbMode==MODE_XBOX){            // XBOX: standard gamepad + right-pad mouse (2nd interface)
               rfXboxGamepad(rep); rfXboxMouse(rep);
             } else if(g_connSlot>=0 && g_connSlot<NSLOT){  // STEAM / LIZARD (puck interface)
-              bool steamAlive = g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS);
-              if(g_usbMode==MODE_LIZARD || (g_autoLizard && !steamAlive)){
+              if(lizardActive()){
                 rfLizard(rep, &hid[g_connSlot], &hid[g_connSlot], 0x40, 0x41);
               } else {
                 uint8_t blen=tlen-1; if(blen>45)blen=45;  // body after the 0x45 id byte
@@ -1967,7 +1979,7 @@ void loop() {
   }
   // Steam-mode haptic guard: do not synthesize haptic packets. The reconnect guard above only drops stale
   // host 0x82 traffic until the link is stable; active-session haptics are relayed verbatim.
-  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) { g_haptic82On=false; g_hapticStop=HAPTIC_STOP_BURST; }  // host went silent mid-haptic (its stop was lost / never sent) -> actively stop the latched buzz
+  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) g_haptic82On=false;  // host went quiet -> mark the 0x82 stream inactive. Do NOT synthesize a stop: trackpad haptics are one-shot pulses, so firing a 0x82-zero ~HAPTIC_QUIET_MS after a swipe ends is the extra end-of-movement click the real puck doesn't make. Steam forwards its own stop for any sustained haptic.
   // QoS: if the current channel is degrading (crcfail+noRx), hop to the next clean candidate (conservative).
   if (g_qos && g_connSlot>=0 && millis()-g_qosCheckMs>=600) {
     uint16_t bad=g_qosBad; g_qosBad=0; g_qosCheckMs=millis();

@@ -286,11 +286,18 @@ does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly
 - VID:PID `28DE:1304`
 - Four puck HID interfaces (CDC + WebUSB also present)
 - `0x45` reports are forwarded to the connected slot's HID interface
-- **Seamless lizard**: when Steam's `0x87` heartbeat is alive, `0x45` is forwarded; when it stops
+- **Seamless lizard**: when Steam is driving the device, `0x45` is forwarded; when it isn't
   (Steam closed, 7 s watchdog) the same `0x45` is translated into mouse (`0x40`) + keyboard (`0x41`)
   reports on the **same** puck interface, so the device is a driverless desktop keyboard+mouse with no
   mode switch. This is purely USB-side; the RF poll and relay are unchanged. (There is no standalone
   lizard mode.)
+- **"Steam is driving" signal**: *any* Steam OUTPUT/settings report (`0x80`–`0x89`, e.g. the `0x87`
+  lizard-off heartbeat, LED, or a `0x82` haptic) refreshes the watchdog — not just `0x87`. This makes
+  the puck leave lizard for gamepad on Steam's **first** contact, even if that first packet is a haptic
+  that arrives before the heartbeat.
+- **Haptics are gated on this decision**: a `0x82` haptic is **never** relayed to the controller while
+  the puck is presenting lizard. Relaying haptics while Steam isn't reading `0x45` back made Steam loop
+  the same command, leaving the controller buzzing; suppressing them keeps the lizard state clean.
 
 ### 9.2 Xbox mode
 
