@@ -1884,6 +1884,12 @@ void setup() {
     g_hidGyro.begin();
   } else {                             // STEAM / LIZARD: 4 puck slot interfaces (+ WebUSB)
     USBDevice.setID(0x28DE, 0x1304);
+    // Distinct bcdDevice so Windows keys a FRESH usbflags entry (cache is VID:PID:bcdDevice) and actually
+    // runs MS OS 2.0 / WinUSB binding for the WebUSB vendor interface — instead of reusing a stale "no WinUSB"
+    // entry tied to the real Steam Controller (28DE:1304), which has no WebUSB interface. Without this, the
+    // device enumerates and Steam binds it fine, but Chrome can't open WebUSB on Windows. Every other mode
+    // already sets a version (and has its own VID:PID), which is why only puck mode was affected.
+    USBDevice.setDeviceVersion(0x0210);
     USBDevice.setManufacturerDescriptor("Valve Software");
     USBDevice.setProductDescriptor("Steam Controller Puck");
     for (int i = 0; i < NSLOT; i++) {
