@@ -211,13 +211,16 @@ Waking the host is an **explicit gesture, never a side effect of input**. While 
 personality sends *nothing* (no `0x45` forwards, no lizard mouse/keyboard, no periodic `0x79`/`0x7B` status) —
 a suspended-bus `sendReport` can itself translate into a host wake, which made the PC wake on any trackpad
 graze and nearly impossible to keep asleep. The only wake triggers are a **Steam-button short press** or a
-**controller connect**, detected in `rf_link.cpp` (guarded by `USBDevice.suspended()`), which call
-`USBDevice.remoteWakeup()` — the device-level USB resume signal.
+**controller connect**, detected in `rf_link.cpp` (guarded by `USBDevice.suspended()`). Each fires two things:
 
-(An earlier build also injected a post-resume "nudge" — a synthetic space-bar + mouse click on the puck's own
-HID reports — on the theory that some hosts ignore a bare resume. It was removed: once the wake-mouse interface
-gave the device a wait-wake-armed `mouhid` function the resume alone is honored, and the synthetic input had
-side effects on the host, e.g. landing on the desktop/taskbar after wake and launching apps.)
+1. `USBDevice.remoteWakeup()` — the device-level USB resume signal; and
+2. `g_active->wakeEvent()` — queues a **wake nudge**, because a bare resume signal is **not** enough to wake
+   some hosts (Windows especially): they only wake when real keyboard/mouse input *follows* the resume. Once
+   the bus is back up, the puck personality plays a HARMLESS nudge on its own reports (`wakeNudgeTask` in
+   `puck_hid.cpp`): a **mouse jiggle** (move a few px and back, no button) + a lone **Left-Ctrl tap**. It can't
+   be sent *during* suspend (reports can't cross a suspended bus), so it's delivered right after resume.
+   (It originally sent a left *click* + *space*, which woke the host but also clicked/activated whatever was
+   focused — it kept launching the browser. Move + modifier wake just as well with no actionable side effect.)
 
 The board LED is a wake debugger (`status_led.cpp`): dark in all steady states (including while armed), and a
 500 ms flash at the moment a `remoteWakeup()` is actually sent. Flash + host stays asleep = the resume was sent

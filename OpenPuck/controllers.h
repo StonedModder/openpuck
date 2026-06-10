@@ -23,6 +23,7 @@ public:
   virtual void begin() = 0;
   virtual void onReport45(const uint8_t* rep, bool fresh, uint8_t bodyTlen) { (void)rep; (void)fresh; (void)bodyTlen; }
   virtual void task() {}
+  virtual void wakeEvent() {}   // a wake gesture fired while suspended; queue any post-resume input the host needs to actually wake
   virtual bool isPuck() const { return false; }
 };
 
