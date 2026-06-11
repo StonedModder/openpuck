@@ -56,7 +56,7 @@ void serialConsolePoll(){
       else if (line[0]=='W'){ g_abSwap=!g_abSwap; saveCfg(); Serial.printf("# A/B + X/Y swap %s (Nintendo layout)\n",g_abSwap?"ON":"off"); }
       else if (line[0]=='K'){ int i=line[1]-'0'; uint8_t code=strtoul(line+2,0,10); if(i>=0&&i<4){ g_back[i]=code; saveCfg(); Serial.printf("# back[%d] (%s) -> code %u  [0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=Start 11=Guide]\n",i,(const char*[]){"L4","R4","L5","R5"}[i],code); } else Serial.println("# usage: K<0-3> <code>  (0=L4 1=R4 2=L5 3=R5)"); }
       else if (line[0]=='J'){ char* sp=0; uint8_t id=strtoul(line+1,&sp,0); uint16_t val=sp?strtoul(sp,0,0):0;  // inject SET-SETTINGS to controller: report 0x87 [id][val u16 LE]
-        g_relayBuf[0]=0x87; g_relayBuf[1]=3; g_relayBuf[2]=id; g_relayBuf[3]=val&0xFF; g_relayBuf[4]=val>>8; g_relayN=5; g_relayPend=true;
+        uint8_t pl[3]={id,(uint8_t)(val&0xFF),(uint8_t)(val>>8)}; relayEnqueue(0x87,pl,3);
         Serial.printf("# queued SET-SETTINGS id=0x%02X val=%u (relay 0x87) — watch new=/s\n",id,val); }
       else if (line[0]=='G'){ g_sniff=!g_sniff; g_sniffPh=0; g_rfHost=g_connOn=g_rfCap=g_rfAuto=g_rfReplay=false; if(g_sniff) rfSniffStart(); Serial.printf("# SESSION SNIFF %s (phase0: catch host frame on ibex/ch2; phase1 PARK ch=%s)\n",g_sniff?"ON":"off",g_sniffPark?"override":"primary"); }
       else if (line[0]=='g'){ g_sniffPark=strtoul(line+1,0,10); if(g_sniffPh==1) rfSniffStart(); Serial.printf("# sniff park channel=%u (0=learned primary)\n",g_sniffPark); }

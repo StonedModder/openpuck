@@ -40,9 +40,21 @@ extern unsigned long g_qosCheckMs, g_qosLastHopMs;
 // per-second rate readouts for the WebUSB status blob
 extern uint16_t g_f1ps;         // last completed second's F1 rate
 extern uint16_t g_newps;        // genuine new-report rate (report 0x45 seq byte changes)
+extern uint16_t g_pollsps;      // last second's poll TX count (GET+relay) -- vs F1 tells starvation from reply-loss
+extern uint16_t g_pollPeriodUs; // MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
+
+// Smoothed controller->puck signal strength, sampled by the radio (RSSISAMPLE) on each CRC-good controller
+// reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. puck_hid reports it
+// to Steam in status report 0x7B byte 8 (signed dBm), after subtracting RSSI_DBM_OFFSET.
+extern volatile uint8_t g_linkRssi;
+// dB to subtract from our raw RSSI magnitude before reporting, to match the real puck's close-range -35dBm
+// (compensates the Pro Micro antenna vs Valve's front-end). Tune against one known-distance reading.
+#define RSSI_DBM_OFFSET 20
 
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
-uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen);
+// rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect
+// no reply, so they don't burn a full ~1.2ms window of dead air per haptic.
+uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen, uint16_t rxWinUs=0);
 // Mid-session channel hop: advertise newCh on the current channel a few times, then move the poll to newCh.
 void rfHopTo(uint8_t newCh);
 // Per-loop: host-frame beacons + connected-mode poll + remote-wakeup + QoS hop + per-second stats.

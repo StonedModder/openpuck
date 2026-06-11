@@ -161,11 +161,11 @@ void XboxController::onReport45(const uint8_t* rep, bool fresh, uint8_t bodyTlen
 // re-queued ~40/s like Steam's glide haptic so it sustains. Not active in the current HID Xbox presentation.
 void XboxController::task(){
   if (g_rumble && millis()-g_rumbleMs > RUMBLE_STUCK_MS) g_rumble=0;
-  if (g_rumble && !g_relayPend && g_connSlot>=0) {
+  if (g_rumble && !relayPending() && g_connSlot>=0) {
     static unsigned long lastRumble=0;
     if (millis()-lastRumble>=25) { lastRumble=millis();
       uint8_t gain = g_rumble<0x30?0x30:g_rumble;   // floor so low rumble is still feelable
-      g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=gain; g_relayPend=true;
+      uint8_t pl[3]={0x01,0x01,gain}; relayEnqueue(0x82,pl,3);
     }
   }
 }

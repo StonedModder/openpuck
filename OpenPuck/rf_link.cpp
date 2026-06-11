@@ -36,6 +36,10 @@ unsigned long g_qosCheckMs = 0, g_qosLastHopMs = 0;
 
 uint16_t g_f1ps = 0;
 uint16_t g_newps = 0;
+uint16_t g_pollsps = 0;   // polls/s (GET+relay TXs) last second -- distinguishes loop-starvation from reply-loss
+uint16_t g_pollPeriodUs = 0;   // MEASURED avg us between GET-poll fires (vs intended g_pollUs) -- ground truth
+static uint32_t g_pollDtSum = 0; static uint16_t g_pollDtCnt = 0;
+volatile uint8_t g_linkRssi = 0;   // smoothed |dBm| of the controller's replies (0 = none yet)
 
 // ---- internal counters / timers ----
 static uint8_t  g_e3pid = 0;
@@ -83,7 +87,11 @@ static void rfHostFrameOnce(int slot, bool discovery){
   NRF_RADIO->PACKETPTR=(uint32_t)rfrx; rfrx[0]=0;
   NRF_RADIO->SHORTS=RADIO_SHORTS_READY_START_Msk;
   NRF_RADIO->EVENTS_END=0; NRF_RADIO->TASKS_RXEN=1;
-  uint32_t t0=micros(); while(!NRF_RADIO->EVENTS_END && (micros()-t0)<800){}
+  // Discovery/pairing beacons listen for the controller's response (matters for RE/pairing); the connected
+  // session keepalive expects NO response (the controller answers E3 polls, not the beacon), so don't burn
+  // 800us of dead air per frame -- that was the bulk of the idle poll-rate deficit (40 beacons/s x slots).
+  uint16_t bwin = discovery ? 800u : 150u;
+  uint32_t t0=micros(); while(!NRF_RADIO->EVENTS_END && (micros()-t0)<bwin){}
   if (NRF_RADIO->EVENTS_END){ NRF_RADIO->EVENTS_END=0;   // ANY reception = controller answered our frame
     g_rfRxCount++; bool crcok=NRF_RADIO->CRCSTATUS&1; uint8_t len=rfrx[0];
     if (Serial.availableForWrite()>90){                  // non-blocking: don't stall the loop on CDC backpressure
@@ -101,7 +109,8 @@ void rfHopTo(uint8_t newCh){
   g_rfCh=savedRfCh;                          // poll + session beacon now run on g_sessCh=newCh
 }
 
-uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen){
+uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen, uint16_t rxWinUs){
+  uint16_t win = rxWinUs ? rxWinUs : g_rxWin;   // relays pass a tiny window (no reply expected); polls use g_rxWin
   memset(rftx,0,sizeof rftx);
   rftx[0]=plen;                          // LENGTH = payload byte count
   rftx[1]=s1;                            // S1 (type-specific)
@@ -112,10 +121,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen){
   NRF_RADIO->EVENTS_DISABLED=0; NRF_RADIO->TASKS_TXEN=1;
   RWAIT_DISABLED(); NRF_RADIO->EVENTS_DISABLED=0;
   NRF_RADIO->PACKETPTR=(uint32_t)rfrx; rfrx[0]=0;
-  NRF_RADIO->SHORTS=RADIO_SHORTS_READY_START_Msk;       // RXEN->READY->START; catch the reply
+  // RXEN->READY->START; catch the reply. ADDRESS->RSSISTART samples the reply's signal strength (read from
+  // RSSISAMPLE below, surfaced to Steam via report 0x7B); DISABLED->RSSISTOP closes the measurement.
+  NRF_RADIO->SHORTS=RADIO_SHORTS_READY_START_Msk|RADIO_SHORTS_ADDRESS_RSSISTART_Msk|RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
   NRF_RADIO->EVENTS_END=0; NRF_RADIO->TASKS_RXEN=1;
   g_stPoll++;
-  uint32_t t0=micros(); while(!NRF_RADIO->EVENTS_END && (micros()-t0)<g_rxWin){}  // RX window (tunable 'r')
+  uint32_t t0=micros(); while(!NRF_RADIO->EVENTS_END && (micros()-t0)<win){}  // RX window (tunable 'r'; or relay override)
   uint8_t rxlen=0;
   if (NRF_RADIO->EVENTS_END){ NRF_RADIO->EVENTS_END=0;
     bool crcok=NRF_RADIO->CRCSTATUS&1; rxlen=rfrx[0];
@@ -127,7 +138,15 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen){
       // beacons (0xE1) + polls (0xE2/E3/E7) -- all E-type. Without this gate, puck A receives a SECOND puck's
       // 0xE1 beacon (e.g. one just plugged into another computer), bumps g_connReplyMs, and the "new RF
       // connection" wake in rfLinkTask() fires -> the second puck spuriously wakes this sleeping host.
-      if (rtype >= 0xF0){ g_connRx++; g_connReplyMs=millis(); }  // link alive -> loop() suppresses the redundant E1 beacon
+      if (rtype >= 0xF0){                                       // F-type reply (F1/F2/F3) -> our controller is alive
+        // A reply after a long gap (or the first ever) = a (re)connect. Arm the haptic block + re-init HERE,
+        // directly off the reply stream -- reliable even when hapticTask's 300ms link-up edge doesn't fire
+        // (e.g. a power-cycled controller that reconnects without us cleanly seeing the link drop).
+        if (g_connReplyMs==0 || (uint32_t)(millis()-g_connReplyMs) > 1500u) hapticOnReconnect();
+        g_connRx++; g_connReplyMs=millis();                     // link alive -> loop() suppresses the redundant E1 beacon
+        uint8_t rs=(uint8_t)(NRF_RADIO->RSSISAMPLE & 0x7F);      // |dBm| of this reply (started by the ADDRESS short)
+        if(rs) g_linkRssi = g_linkRssi ? (uint8_t)((g_linkRssi*7u + rs + 4u)/8u) : rs;   // EWMA, ~8-sample horizon
+      }
       if(rtype==0xF1) g_stF1++;
       if(rtype==0xF2) g_connCooldown=millis();          // controller disconnecting/powering off -> back off 2.5s
       if(rtype==0xF3){                                  // F3 = controller status/version reply (reply to E7 handshake, byte[6]=version)
@@ -221,10 +240,24 @@ static void rfConnStep(){
     if(++g_connStep>=4){ g_connSt=1; g_connStep=0; Serial.println("# CONN: awake announced -> polling GET report 0x45"); }
   } else {                               // poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
     if((uint32_t)(micros()-g_lastPollUs) < g_pollUs) return;   // CONTROLLED CADENCE: poll ~every g_pollUs
-    g_lastPollUs=micros();                                     // (over-polling starves replies)
+    // FIXED-RATE schedule: advance the deadline by exactly one interval. The old `g_lastPollUs = micros()`
+    // reset the reference to AFTER the gate passed, so each cycle's ~1ms of poll work + loop jitter was added
+    // to the next interval and never reclaimed -- the period drifted to ~5000us (200/s) instead of 4000us
+    // (250/s). Advancing by g_pollUs keeps the long-run average at exactly the target; the resync guard
+    // prevents a catch-up burst if we ever fall more than a full interval behind (a real stall).
+    { uint32_t now=micros();
+      static uint32_t lastFire=0;
+      if(lastFire){ g_pollDtSum += (uint32_t)(now-lastFire); g_pollDtCnt++; }   // MEASURED actual period
+      lastFire=now;
+      g_lastPollUs += g_pollUs;
+      if((uint32_t)(now - g_lastPollUs) >= g_pollUs) g_lastPollUs = now;        // fell >1 interval behind -> resync
+    }
     if((g_connPoll & 0x1F)==0){ uint8_t pa[3]={0xE7,0x00,g_e7b}; rfConnTx(ch,0x01,pa,3); }   // re-assert awake/version
     rfConnQueueHapticRelay();
-    rfConnFlushRelay(ch);
+    // Relay (if any) gets its OWN cycled PID, then the GET poll gets the NEXT one -- so they're always distinct
+    // and the controller never dedups the GET as a retransmit of the relay (that was dropping ~half the replies
+    // during haptics). Advancing g_e3pid even when no relay is pending just skips a PID value (harmless).
+    { uint8_t rs1=(uint8_t)((((g_e3pid++)&3)<<1)|1); rfConnFlushRelay(ch, rs1); }
     {
       uint8_t p[5]={0xE3,0x02,0x01,0x45,g_getParam}; // E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
       uint8_t s1 = (g_e3mode==1) ? (uint8_t)((((g_e3pid++)&3)<<1)|1)   // cycle PID (S1 1,3,5,7), NO_ACK=1
@@ -268,5 +301,6 @@ void rfLinkTask(){
       rfHopTo(g_hopCand[g_hopIdx]); g_qosLastHopMs=millis();
     }
   }
-  if (g_connOn && millis()-g_stMs>=1000){ g_f1ps=g_stF1; g_newps=g_stNew; if(Serial.availableForWrite()>70) Serial.printf("# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d\n",(unsigned long)g_stPoll,(unsigned long)g_stF1,(unsigned long)g_stNew,(unsigned long)g_stF3,(int8_t)g_connF3v,g_e7b,(unsigned long)g_stCrc,(unsigned long)g_stNoRx,g_connSlot); g_stPoll=0; g_stF1=0; g_stNew=0; g_stF3=0; g_stCrc=0; g_stNoRx=0; g_chF1[0]=g_chF1[1]=g_chF1[2]=0; g_stMs=millis(); }
+  if (g_connOn && millis()-g_stMs>=1000){ g_f1ps=g_stF1; g_newps=g_stNew; g_pollsps=(uint16_t)g_stPoll;
+    g_pollPeriodUs = g_pollDtCnt ? (uint16_t)(g_pollDtSum/g_pollDtCnt) : 0; g_pollDtSum=0; g_pollDtCnt=0; if(Serial.availableForWrite()>70) Serial.printf("# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d\n",(unsigned long)g_stPoll,(unsigned long)g_stF1,(unsigned long)g_stNew,(unsigned long)g_stF3,(int8_t)g_connF3v,g_e7b,(unsigned long)g_stCrc,(unsigned long)g_stNoRx,g_connSlot); g_stPoll=0; g_stF1=0; g_stNew=0; g_stF3=0; g_stCrc=0; g_stNoRx=0; g_chF1[0]=g_chF1[1]=g_chF1[2]=0; g_stMs=millis(); }
 }
