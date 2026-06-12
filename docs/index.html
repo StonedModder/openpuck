@@ -79,6 +79,8 @@
       <h2>Link status</h2>
       <div class="statgrid">
         <div class="stat"><div class="k">RF link</div><div class="v" id="stLink">—</div></div>
+        <div class="stat"><div class="k">Battery</div><div class="v" id="stBatt">—</div></div>
+        <div class="stat"><div class="k">Signal</div><div class="v" id="stRssi">—</div></div>
         <div class="stat"><div class="k">Slot</div><div class="v" id="stSlot">—</div></div>
         <div class="stat"><div class="k">Delivered</div><div class="v" id="stRate">—</div></div>
         <div class="stat"><div class="k">New reports</div><div class="v" id="stNew">—</div></div>
@@ -223,7 +225,11 @@ function applyBlob(p){
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
   // status
+  const battery=(p.length>36?p[36]:0);                    // controller battery % (report 0x43); 0 = unknown
+  const rssi=(p.length>37?p[37]:0);                       // RAW signal strength |dBm| (0 = no sample)
   $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
+  $("#stBatt").textContent = (up && battery)? battery+"%" : "—";
+  $("#stRssi").textContent = (up && rssi)? ("-"+rssi+" dBm") : "—";
   $("#stSlot").textContent = slot===0xFF? "—" : slot;
   $("#stRate").textContent = up? f1+" /s" : "—";
   $("#stNew").textContent = up? newps+" /s" : "—";

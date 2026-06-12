@@ -27,7 +27,7 @@ void rfGenSessionAddr(){
      g_sessBase[2]==g_rfBase[2] && g_sessBase[3]==g_rfBase[3]) g_sessBase[0]^=0x80;   // collided with "ibex"
 }
 
-uint8_t  rfrx[80], rftx[80];
+uint8_t  rfrx[100], rftx[100];
 uint32_t g_rfRxCount = 0;
 
 // HYBRID puck-link config (firmware-derived, definitive). DECODED from real-puck capture: puck TX = Ble_2Mbit,
@@ -37,7 +37,8 @@ uint8_t  g_whiteiv = 37;
 uint8_t  g_mode    = RADIO_MODE_MODE_Ble_2Mbit;   // <-- was the bug (1Mbit). Real puck = 2Mbit.
 uint32_t g_pcnf0   = 0x00030008UL;                // S0LEN0, LFLEN8, S1LEN3 (ESB DPL) - CRC-VALIDATED
 uint8_t  g_statlen = 0x20;
-uint32_t g_pcnf1   = 0x01040040;                  // ENDIAN=Big, BALEN4, MAXLEN64 - CRC-VALIDATED
+uint32_t g_pcnf1   = 0x01040060;                  // ENDIAN=Big, BALEN4, MAXLEN=96 (was 64 -> truncated the controller's
+                                                  // 66-byte 0x43-battery-augmented F1 -> CRC-fail -> battery never arrived)
 uint32_t g_crcpoly = 0x11021UL;
 uint16_t g_crccnf  = 0x2;                          // CRC16, address included
 uint8_t  g_pid     = 0;

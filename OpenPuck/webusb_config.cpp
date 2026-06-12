@@ -13,14 +13,14 @@ Adafruit_USBD_WebUSB usb_web;
 //                [f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub][fwdNewOnly]
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
-//                [pollPeriod_lo][pollPeriod_hi][logEnabled]
-#define WB_PAYLEN 36
+//                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
+#define WB_PAYLEN 38
 static void webusbSendBlob(){
   if(!usb_web.connected()) return;
   bool up = (g_connSlot>=0 && (millis()-g_connReplyMs) < 300);
   uint8_t p[2+WB_PAYLEN];
   p[0]=0xA5; p[1]=WB_PAYLEN;
-  p[2]=2;                          // protocol version (2 = chordBtn[3] in blob)
+  p[2]=3;                          // protocol version (3 = +battery/rssi at [38][39])
   p[3]=g_usbMode; p[4]=(uint8_t)g_mDiv; p[5]=(uint8_t)g_mFric; p[6]=0 /*rsvd: ex-padSmooth*/; p[7]=g_abSwap;
   p[8]=g_back[0]; p[9]=g_back[1]; p[10]=g_back[2]; p[11]=g_back[3];
   p[12]=(g_connSlot>=0)?(uint8_t)g_connSlot:0xFF;
@@ -36,6 +36,8 @@ static void webusbSendBlob(){
   p[32]=g_loopWorst; p[33]=(uint8_t)g_loopWorstUs; p[34]=(uint8_t)(g_loopWorstUs>>8);
   p[35]=(uint8_t)g_pollPeriodUs; p[36]=(uint8_t)(g_pollPeriodUs>>8);   // measured actual poll period (vs intended 4000)
   p[37]=OPK_LOG;                                                       // logging build? panel shows/hides its log UI
+  p[38]=g_battery;                                                     // controller battery % (report 0x43); 0=unknown
+  p[39]=g_linkRssi;                                                    // RAW signal strength |dBm| (0=no sample)
   usb_web.write(p,sizeof p); usb_web.flush();
 }
 #if OPK_LOG

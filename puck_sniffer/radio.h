@@ -32,7 +32,7 @@ extern uint8_t  g_sessBase[4];
 extern uint8_t  g_sessPrefix;
 void rfGenSessionAddr();
 
-extern uint8_t  rfrx[80], rftx[80];  // RADIO DMA buffers
+extern uint8_t  rfrx[100], rftx[100];  // RADIO DMA buffers
 extern uint32_t g_rfRxCount;
 
 // ---- tunable radio parameters (CDC console M/0/2/i/w/I/P/N/T/A) ----

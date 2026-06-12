@@ -44,16 +44,15 @@ extern uint16_t g_pollsps;      // last second's poll TX count (GET+relay) -- vs
 extern uint16_t g_pollPeriodUs; // MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
 
 // Smoothed controller->puck signal strength, sampled by the radio (RSSISAMPLE) on each CRC-good controller
-// reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. puck_hid reports it
-// to Steam in status report 0x7B byte 8 (signed dBm), after subtracting RSSI_DBM_OFFSET.
+// reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. Reported RAW (no offset,
+// no clamp) to Steam in report 0x7B byte 8 (signed dBm) and surfaced in the WebUSB panel.
 extern volatile uint8_t g_linkRssi;
-// Last F1 type-2 control/status TLV the controller sent (battery/charge/flags). Logged (capture slot 0xFB) for
-// discovery; once the battery byte is identified it feeds report 0x7B (today hardcoded -> Steam shows full).
+// Battery percent from the controller's periodic report 0x43 (body[1]); 0 = none yet. Surfaced in the panel;
+// the raw 0x43 report is also forwarded to Steam verbatim (puck_hid onAuxReport) so Steam reads battery itself.
+extern volatile uint8_t g_battery;
+// Last F1 type-2 control/status TLV the controller sent. Logged (capture slot 0xFB) for diagnostics.
 extern volatile uint8_t g_ctlrStatus[8];
 extern volatile uint8_t g_ctlrStatusLen;
-// dB to subtract from our raw RSSI magnitude before reporting, to match the real puck's close-range -35dBm
-// (compensates the Pro Micro antenna vs Valve's front-end). Tune against one known-distance reading.
-#define RSSI_DBM_OFFSET 10
 
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
 // rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect

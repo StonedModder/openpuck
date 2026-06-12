@@ -63,7 +63,25 @@ address changes), so we anchor the lock on that uuid and force a reconnect.
 auto-reconnecting *before* the lock is armed, so its `E1` is never caught.
 
 Direction: `P→C` (opcode `0xE_`, puck→controller — LED/shutoff/brightness commands ride here) vs `C→P` (`0xF_`,
-controller→puck — input + battery/telemetry). The `filter` box matches payload hex (e.g. `9f`).
+controller→puck — input + battery/telemetry).
+
+### Filters (find the needle in the input spam)
+The table has a filter bar:
+- **hide input/polls** — drops the 99% routine traffic (the 49-byte `0xF1` input replies and the bare `0xE3`
+  polls), leaving only commands, feature responses, beacons, and anything unusual.
+- **dir** — `P→C` / `C→P` / all.
+- **op** — exact opcode, e.g. `f1`, `e3`.
+- **len** — `≠ 49 (non-input)`, `> 49`, `> 1`. **`≠ 49` is the key for finding feature responses / battery.**
+- **hex** — substring match on the payload (e.g. `9f`, `2d`).
+
+Filters re-render the visible table from a buffer, so you can change them after the fact.
+
+### Capturing battery
+Battery is **not** in the input stream — it's `ID_GET_BATTERY_DATA`, a feature GET Steam issues **on demand**
+(when it shows the battery), answered by the controller in a **longer `C→P` frame (len > 49)** carrying a
+`type-04` TLV. To catch it: lock + Start Cap as above, set **hide input/polls** + dir **C→P** (or len **≠ 49**),
+then **open the controller's page in Steam** (Settings → Controller / the battery indicator) so Steam polls it.
+Grab the non-49 `C→P` frame that appears.
 
 ### If `C→P` won't climb after the power-cycle
 - **Survey ch2** and look at the `op e1` rows during the reconnect: one payload should contain your uuid in

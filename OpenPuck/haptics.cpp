@@ -258,10 +258,15 @@ void hapticTask(){
   // Auto-stops when the 30s window elapses; re-arm from the WebUSB panel. Gated on link-up (no churn while down).
   static unsigned long floodMs=0;
   if ((int32_t)(g_buzzFloodUntil - millis()) > 0 && up && millis()-floodMs >= HAPTIC_FLOOD_GAP_MS){ floodMs=millis(); hapticReinit(); }
-  // Controller power-off on host sleep: send the power-off command (0x9F "off!") the instant the USB bus
-  // suspends, like the real puck. wasSusp starts true so a boot-into-suspended state never false-fires.
+  // Controller power-off on host SLEEP: send the power-off command (0x9F "off!") the instant the USB bus
+  // suspends, like the real puck. BUT only when USB power (VBUS) is still present -- i.e. a genuine host sleep,
+  // NOT a cable unplug. Pulling the dongle ALSO trips the suspend edge (in the brief window it runs on residual
+  // power), and we must NOT kill the controller then; the controller should only power off on a shutdown
+  // chord/command or real host sleep. VBUSDETECT is 1 while the cable still delivers 5V, 0 once unplugged.
+  // wasSusp starts true so a boot-into-suspended state never false-fires.
   static bool wasSusp=true; bool susp=USBDevice.suspended();
-  if (susp && !wasSusp) hapticSendShutdown();
+  bool vbus = (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+  if (susp && !wasSusp && vbus) hapticSendShutdown();
   wasSusp=susp;
   // Steam-mode: host went quiet -> mark the 0x82 stream inactive. Do NOT synthesize a stop: trackpad haptics
   // are one-shot pulses, so firing a 0x82-zero ~HAPTIC_QUIET_MS after a swipe ends is the extra end-of-movement

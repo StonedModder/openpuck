@@ -226,6 +226,18 @@ void SteamPuckController::onReport45(const uint8_t* rep, bool fresh, uint8_t bod
   }
 }
 
+// Forward the controller's NON-input status reports (0x43 power/battery, 0x44) to Steam verbatim -- the real
+// puck does this and it's how Steam reads battery. OpenPuck used to drop everything but 0x45, so Steam never got
+// the power report (-> default/unknown battery). Same host-asleep / post-resume gating as 0x45; no lizard path
+// (status reports aren't input, so they forward regardless of the lizard decision).
+void SteamPuckController::onAuxReport(uint8_t rid, const uint8_t* data, uint8_t n){
+  if (USBDevice.suspended()) return;
+  if (g_resumeMs && millis()-g_resumeMs < POST_RESUME_MUTE_MS) return;
+  if (g_connSlot < 0 || g_connSlot >= NSLOT) return;
+  if (g_slot[g_connSlot].used && hid[g_connSlot].ready())
+    hid[g_connSlot].sendReport(rid, data, n);
+}
+
 // ---- wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they
 // only wake when actual mouse/keyboard input follows. So on a deliberate wake gesture we play a HARMLESS mouse
 // JIGGLE (move a few px right, then back -- NET ZERO cursor, NO button): real mouse activity wakes the host,
@@ -275,21 +287,11 @@ void SteamPuckController::task(){
       uint8_t st=conn?0x02:0x01; hid[g_connSlot].sendReport(0x79,&st,1); usbConn=conn; last79=millis();
     } else if (conn && millis()-last7B>=2000){
       // 0x7B status, live-captured template. Byte 8 is the controller->puck signal strength as signed dBm
-      // (capture showed 0xDD = -35; replaying it verbatim is why Steam pinned -35dBm forever) -- patch in the
-      // smoothed RSSI the radio now samples on each controller reply (rf_link). 0 = no sample yet -> keep the
-      // capture value rather than report garbage.
-      //
-      // CALIBRATION: our raw RSSISAMPLE reads ~RSSI_DBM_OFFSET dB lower than the real Valve puck at the same
-      // distance (the Pro Micro's PCB-trace antenna vs Valve's tuned front-end). The 2Mbit ESB link has ~55dB
-      // of margin, so a -75dBm reading still works across a house -- but Steam's bar maps raw dBm to "weak"
-      // long before that. Adding the offset lines our close-range value up with the puck's captured -35 so the
-      // bar tracks usable range instead of antenna gain. Clamp keeps it in a sane window (no wrap/garbage).
+      // (capture showed 0xDD = -35). Report the RAW measured RSSI magnitude (rf_link's g_linkRssi) as signed
+      // dBm -- no calibration offset, no clamp (removed per request; the offset was a cosmetic match to the real
+      // puck's tuned front-end). 0 = no sample yet -> keep the capture template value rather than report garbage.
       uint8_t s7b[12]={0xF7,0x01,0x89,0x00,0x00,0x00,0x03,0x00,0xDD,0x00,0x3A,0x02};
-      if (g_linkRssi){
-        int mag = (int)g_linkRssi - RSSI_DBM_OFFSET;
-        if (mag < 25) mag = 25; else if (mag > 95) mag = 95;
-        s7b[8]=(uint8_t)(0u-(uint8_t)mag);
-      }
+      if (g_linkRssi) s7b[8]=(uint8_t)(0u-(uint8_t)g_linkRssi);   // raw |dBm| -> signed dBm
       hid[g_connSlot].sendReport(0x7B,s7b,12); last7B=millis();
     }
   } else if(!conn) usbConn=false;

@@ -33,7 +33,7 @@
 Adafruit_USBD_WebUSB usb_web;
 
 // ---- capture ring (single producer + consumer, both loop context -> no locking) ----
-struct Cap { uint32_t t; uint8_t ch, flags, rssi, match, n; uint8_t b[66]; };
+struct Cap { uint32_t t; uint8_t ch, flags, rssi, match, n; uint8_t b[96]; };
 #define RINGN 512
 static Cap      g_ring[RINGN];
 static volatile uint16_t g_head = 0, g_tail = 0;
@@ -115,7 +115,7 @@ static void rxPump(){
     uint8_t match = (uint8_t)(NRF_RADIO->RXMATCH & 0x7);   // which logical address (pipe) the frame hit
     g_lastMatch = match;
     uint8_t len = rfrx[0];
-    uint16_t n = (uint16_t)(2 + len); if (n > 66) n = 66;   // LENGTH + S1 + payload, clamped
+    uint16_t n = (uint16_t)(2 + len); if (n > 96) n = 96;   // LENGTH + S1 + payload, clamped
     ringPush(micros(), g_curCh, crcok, rssi, match, rfrx, (uint8_t)n);
     g_lastRx = millis();
     if (g_state == 1) g_sweepDry = 0;                        // any frame on the session resets the dry-sweep count
@@ -147,7 +147,7 @@ static void rxPump(){
 
 // ---- WebUSB stream out ----
 static void emitPacket(const Cap &c){
-  uint8_t f[11 + 66];
+  uint8_t f[11 + 96];
   f[0]=0xC0; f[1]=0xDE; f[2]=c.n;
   f[3]=(uint8_t)c.t; f[4]=(uint8_t)(c.t>>8); f[5]=(uint8_t)(c.t>>16); f[6]=(uint8_t)(c.t>>24);
   f[7]=c.ch; f[8]=c.flags; f[9]=c.rssi; f[10]=c.match;

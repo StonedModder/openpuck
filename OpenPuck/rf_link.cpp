@@ -40,6 +40,7 @@ uint16_t g_pollsps = 0;   // polls/s (GET+relay TXs) last second -- distinguishe
 uint16_t g_pollPeriodUs = 0;   // MEASURED avg us between GET-poll fires (vs intended g_pollUs) -- ground truth
 static uint32_t g_pollDtSum = 0; static uint16_t g_pollDtCnt = 0;
 volatile uint8_t g_linkRssi = 0;   // smoothed |dBm| of the controller's replies (0 = none yet)
+volatile uint8_t g_battery  = 0;   // battery % from the controller's report 0x43 (body[1]); 0 = none yet
 volatile uint8_t g_ctlrStatus[8] = {0};   // last F1 type-2 control/status TLV from the controller (battery/flags live here)
 volatile uint8_t g_ctlrStatusLen = 0;
 
@@ -133,7 +134,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen, u
   if (NRF_RADIO->EVENTS_END){ NRF_RADIO->EVENTS_END=0;
     bool crcok=NRF_RADIO->CRCSTATUS&1; rxlen=rfrx[0];
     if(!crcok){ g_stCrc++; g_qosBad++; }                // reply arrived but CRC failed -> RF quality (channel/interference)
-    if (crcok && rxlen && rxlen<=64){                   // F1 report ~46B, so allow up to MAXLEN
+    if (crcok && rxlen && rxlen<=96){                   // F1 input ~46B; 0x43-augmented ~66B -> allow up to MAXLEN(96)
       uint8_t rtype=rfrx[2];                            // reply type byte (proven offset from captures)
       // Only OUR controller's replies (F-type: 0xF1 input / 0xF2 disconnect / 0xF3 status) mark the link
       // alive. Every OpenPuck shares the same RF address "ibex" + CRC config, and a puck transmits host-frame
@@ -198,6 +199,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen, u
             // g_in); PUSH modes (Xbox, puck/lizard) build + send their host report here.
             if(g_active) g_active->onReport45(rep, fresh, tlen);
             lastRep=rep; lastTlen=tlen;
+          }
+          else if(ttype==6 && (size_t)(idx+2)+tlen<=sizeof(rfrx) && tlen>=2 && (rfrx[idx+2]==0x43 || rfrx[idx+2]==0x44)){
+            // Controller STATUS reports (0x43 = periodic power/battery, ~every 2s; 0x44 = status event). The real
+            // puck forwards these to the host verbatim -- that's how Steam reads battery -- but OpenPuck used to
+            // drop everything but 0x45. Forward them (onAuxReport), and snapshot the battery % for the WebUSB panel.
+            const uint8_t* rep=&rfrx[idx+2];                 // [rid][body...]
+            if(rep[0]==0x43 && tlen>=3) g_battery=rep[2];    // 0x43 body[1] (~0x5e=94) reads as battery % (sniff-derived)
+            if(g_active) g_active->onAuxReport(rep[0], rep+1, (uint8_t)(tlen-1));
           }
           else if((ttype==2 || ttype==4) && (size_t)(idx+2)+tlen<=sizeof(rfrx)){
             // The controller's F1 reply also carries NON-input TLVs that OpenPuck used to discard: type 2 = the
