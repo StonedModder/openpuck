@@ -90,7 +90,7 @@ void webusbPoll(){
       else if(op==0x05){ hapLogResetDrain(buf[1]!=0); }   // rewind drain: buf[1]=1 from boot (whole ring), 0 from now
       else if(op==0x06){ webusbDrainCapture(); }          // drain entries since the rewind (panel polls this)
 #endif
-      else if(op==0x07){ hapticArmBuzzFlood(); hapticReinit(); }   // (re)arm the 30s 10Hz buzz-clear flood; fire one now for instant feedback
+      else if(op==0x07){ hapticReinit(); }   // manual one-shot haptic-engine init (same single sequence the puck sends at connect)
       else if(op==0x08){ hapticSendShutdown(); }                   // TEST: trigger the controller power-off attempt (same path host-suspend uses)
       else if(op==0x0A){                                           // FULL factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
         // Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it; the panel double-

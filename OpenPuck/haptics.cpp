@@ -13,9 +13,7 @@ uint8_t          g_relayOp  = 0xE3;   // E3 poll
 uint8_t          g_relaySub = 0x01;
 volatile uint8_t g_testHaptic = 0;
 volatile uint8_t g_hapticStop = 0;
-unsigned long    g_buzzFloodUntil = 0;   // 10Hz re-init flood active while millis() < this; armed boot/connect/panel
 
-void hapticArmBuzzFlood(){ g_buzzFloodUntil = millis() + HAPTIC_FLOOD_MS; }
 // Controller power-off. CONFIRMED from a real Windows USB capture of the Valve puck (shutoff.pcapng): Steam's
 // "turn off controller" is the single feature-0x01 command 0x9F with payload ASCII "off!" (6F 66 66 21). The
 // PROTEUS dongle forwards host feature reports to the controller verbatim as SET_FR (esb.json host_usb_bridge),
@@ -29,10 +27,7 @@ unsigned long    g_hapticBlockUntil = 0;   // drop Steam haptics briefly during 
 
 static unsigned long g_haptic82Ms = 0;     // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false; // a non-zero 0x82 haptic is currently active (awaiting host stop)
-static unsigned long g_reinitAt = 0;       // when to fire the next post-reconnect haptic re-init (0 = none scheduled)
-static uint8_t       g_reinitLeft = 0;     // how many re-init shots remain in this connect window
-static bool          g_hapClearArmed=false;// haptic activity happened -> arm a clear once it goes idle (catches a
-                                           // latch that engaged during/after use, even seconds after connect)
+static unsigned long g_reinitAt = 0;       // when to fire the ONE post-reconnect haptic init (0 = none scheduled)
 
 // ---- relay ring: multi-producer (USB ISR + loop-context console/xinput), single consumer (poll flush) ----
 // Producers serialize through a brief PRIMASK critical section (copy is <=62 bytes); the consumer only ever
@@ -57,9 +52,7 @@ bool relayEnqueue(uint8_t rid, const uint8_t* payload, uint8_t plen){
   g_rq[h].rid = rid; g_rq[h].len = plen;
   if (plen) memcpy(g_rq[h].data, payload, plen);
   g_rqHead = nx;
-  // Any haptic relay (Steam OR Xbox rumble OR test) arms the idle-clear and refreshes its timer -- so the
-  // during-use buzz gets cleared in EVERY USB mode, not just Steam. The re-init's own 0x81/0x87 don't match.
-  if (rid==0x82){ g_haptic82Ms = millis(); g_hapClearArmed = true; }
+  if (rid==0x82) g_haptic82Ms = millis();   // track last haptic activity (for the Steam-mode quiet timeout)
   __set_PRIMASK(pm); return true;
 }
 
@@ -138,7 +131,6 @@ static void hapticCancelPendingOn(){   // void queued 0x82-ON + 0x9F-shutdown en
 void haptic82HostReport(const uint8_t* p, uint16_t n){
   if(n<3) return;
   g_haptic82Ms = millis();
-  g_hapClearArmed = true;   // any haptic activity arms a clear when it next goes idle (kills a latch from this use)
   // Track on/off only. Do NOT synthesize a stop burst when Steam's own stop arrives: that stop is already
   // forwarded verbatim, so adding 0x82-zero frames on top just makes the controller see the stop several times
   // over. Each 0x82 is a discrete pad click, so the extra frames are exactly the spurious end-of-movement
@@ -195,35 +187,30 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1){
 // controller falls into across a reconnect. Brightness (0x87 reg 2d) is deliberately OMITTED so we don't
 // stomp the LED. Enqueued onto the normal relay (drains in the poll cadence).
 void hapticReinit(){
-  // The FULL sequence Steam sends when it (re)takes control / on a Steam-button press -- captured on hardware
-  // and proven to clear a stuck haptic. Replayed verbatim and in order (no trimming this time: the brightness
-  // write 0x87[2d] and the two 7-byte 0x81 frames are part of what Steam sends, and dropping them may be why
-  // the trimmed version didn't always clear the connect buzz).
-  // The leading triplet of Steam's captured sequence is [0x30 00 00] -- register 0x30 is SETTING_GYRO_MODE
-  // (Steam Controller register map: LED brightness 0x2D, gyro mode 0x30), and 0x0000 turns the IMU OFF. Steam
-  // writes it then re-enables gyro with its own follow-up; we only replay the haptic-clear subset, so replaying
-  // 0x30=0 just KILLS the gyro -- and this re-init fires on every reconnect (a mode-switch reboot), repeatedly
-  // across the buzz-flood, and after every haptic idle. That is the "gyro randomly stops, typically after
-  // switching to ps5/switch mode" bug. The controller streams gyro by default (it works on a fresh connect
-  // before any re-init), so the fix is to NOT touch reg 0x30 here. The 0x07/0x08/0x31/0x52 writes that remain
-  // are the haptic-engine registers that actually clear the latch.
+  // The haptic-engine init the real puck sends ONCE in the ~300ms window right after the controller connects
+  // (verified against a puck<->controller sniff): an 0x81 reset bracketing 0x87 writes to the haptic registers
+  // 07/08/31/52 and 18/2e/34/35, then a final 0x81 [01 00 00 00 00 00 00]. We must call this EXACTLY ONCE per
+  // connect, like the real puck -- NOT on a timer/flood. Repeatedly hammering these (the old 10Hz/30s buzz-flood
+  // + 8 reconnect shots + per-idle re-init) is what latched the controller into the self-sustaining buzz.
+  //
+  // Two deliberate deviations from the raw capture: (1) the leading [0x30 ...] triplet (register 0x30 =
+  // SETTING_GYRO_MODE; LED brightness is 0x2D, gyro mode 0x30) is OMITTED -- replaying Steam's 0x30=0 there
+  // disabled the gyro, and the controller streams gyro on by default, so we leave 0x30 alone. (2) brightness
+  // (0x87 reg 2d) is OMITTED so we don't stomp the user's LED. The real puck's 0x81 payloads are [01 00..] and
+  // never the all-zero form, so we send only the [01 00..] one.
   static const uint8_t H30[]={0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
   static const uint8_t H18[]={0x18,0x00,0x00,0x2e,0x00,0x00,0x34,0xff,0xff,0x35,0xff,0xff,0x34,0xff,0xff};
   static const uint8_t H35[]={0x35,0xff,0xff,0x2e,0x00,0x00};
-  static const uint8_t T81A[]={0x00,0x00,0x00,0x00,0x00,0x00,0x00};
   static const uint8_t T81B[]={0x01,0x00,0x00,0x00,0x00,0x00,0x00};
-  relayEnqueue(0x81, nullptr, 0);            // reset action (FUN_0001f554) -- Steam sends this first
+  relayEnqueue(0x81, nullptr, 0);            // reset action (FUN_0001f554) -- the puck brackets the config with this
   relayEnqueue(0x87, H30, sizeof H30);
-  relayEnqueue(0x87, H18, sizeof H18);       // haptic config (enabled/amplifier/gain): the part that clears a latch
+  relayEnqueue(0x87, H18, sizeof H18);       // haptic config (enabled/amplifier/gain)
   relayEnqueue(0x87, H35, sizeof H35);
-  relayEnqueue(0x81, T81A, sizeof T81A);
-  relayEnqueue(0x81, T81B, sizeof T81B);
-  // NOTE: the brightness write (0x87 2d) that Steam includes is deliberately OMITTED -- it's an LED setting,
-  // not haptic, and this re-init now fires often (after every haptic-idle), so we must not flicker the LED.
+  relayEnqueue(0x81, nullptr, 0);            // closing 0x81 bracket
+  relayEnqueue(0x81, T81B, sizeof T81B);     // final [01 00 00 00 00 00 00] (matches the puck's last connect frame)
 }
 void hapticInit(){
   g_rqHead = g_rqTail = 0; g_haptic82On=false;
-  hapticArmBuzzFlood();   // flood the buzz-clear for the first HAPTIC_FLOOD_MS (re-armed on each connect below)
   g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // boot: block stale Steam 0x82 until link stable
   // NO fabricated stop burst. USB capture proves Steam only ever sends 0x82 [01 01 f7] pulses -- never a
   // zero-gain [01 01 00] "stop". Injecting our invented stop frame (which the real puck never sends) at
@@ -232,22 +219,17 @@ void hapticInit(){
   // pure pass-through of Steam's haptics, like the real puck.
   g_hapticStop = 0;
 }
-// Arm the post-(re)connect haptic block + schedule the clearing re-init. Called from rf_link the moment a
+// Arm the post-(re)connect haptic block + schedule the ONE haptic init. Called from rf_link the moment a
 // controller reply arrives after a gap (the reliable reconnect signal), and as a backup on hapticTask's
-// link-up edge. Idempotent -- safe to call repeatedly.
+// link-up edge. Idempotent -- safe to call repeatedly (it just re-arms the single pending init).
 void hapticOnReconnect(){
   g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // no haptics relayed for the next 3s
   g_haptic82On = false;
   hapticCancelPendingOn();                                     // drop any haptic ON queued before the link came up
-  // Be PROACTIVE: start re-initing the haptic engine right after the link is up and repeat across the whole
-  // settle window, instead of waiting for the block to end. The brief connect buzz engages early (during the
-  // block, controller-internal), so a single late shot misses it -- frequent early resets cut it short or
-  // preempt it. The re-init is settings only (no haptic play), and Steam haptics are blocked the whole time,
-  // so repeating it can't itself buzz.
-  g_reinitAt = millis() + 200u;                               // first reset ~200ms after (re)connect
-  g_reinitLeft = HAPTIC_REINIT_SHOTS;                          // then every HAPTIC_REINIT_GAP_MS across the window
-  hapticArmBuzzFlood();                                        // and hammer the buzz-clear at 10Hz for the next 30s
-  uint8_t mk=2; hapLogAdd(0xFD, 0xEE, &mk, 1);                 // capture marker: RECONNECT detected (block+reinit armed)
+  // Schedule the haptic-engine init ONCE, shortly after the link is up -- exactly what the real puck does. (The
+  // old build flooded this at 10Hz for 30s + 8 shots, which is what latched the controller into a stuck buzz.)
+  g_reinitAt = millis() + HAPTIC_REINIT_DELAY_MS;
+  uint8_t mk=2; hapLogAdd(0xFD, 0xEE, &mk, 1);                 // capture marker: RECONNECT detected (block+init armed)
 }
 void hapticTask(){
   static bool wasHapticLinkUp=false;
@@ -257,15 +239,10 @@ void hapticTask(){
   if(up && !wasHapticLinkUp){ uint8_t mk=1; hapLogAdd(0xFD,0xEE,&mk,1); hapticOnReconnect(); }
   if(!up && wasHapticLinkUp){ uint8_t mk=0; hapLogAdd(0xFD,0xEE,&mk,1); }
   wasHapticLinkUp=up;
-  if(g_reinitAt && up && (int32_t)(millis()-g_reinitAt) >= 0){   // proactive haptic re-init across the connect window
+  if(g_reinitAt && up && (int32_t)(millis()-g_reinitAt) >= 0){   // the ONE post-(re)connect haptic init, like the real puck
     hapticReinit();
-    g_reinitAt = (g_reinitLeft && --g_reinitLeft) ? (millis()+HAPTIC_REINIT_GAP_MS) : 0;
+    g_reinitAt = 0;
   }
-  // Buzz-clear FLOOD: while the armed window is open (boot/connect/panel -> g_buzzFloodUntil) and the link is up,
-  // replay the re-init every HAPTIC_FLOOD_GAP_MS (10Hz) to hammer a stubborn latch a single re-init won't shift.
-  // Auto-stops when the 30s window elapses; re-arm from the WebUSB panel. Gated on link-up (no churn while down).
-  static unsigned long floodMs=0;
-  if ((int32_t)(g_buzzFloodUntil - millis()) > 0 && up && millis()-floodMs >= HAPTIC_FLOOD_GAP_MS){ floodMs=millis(); hapticReinit(); }
   // Controller power-off on host SLEEP: send the power-off command (0x9F "off!") the instant the USB bus
   // suspends, like the real puck. BUT only when USB power (VBUS) is still present -- i.e. a genuine host sleep,
   // NOT a cable unplug. Pulling the dongle ALSO trips the suspend edge (in the brief window it runs on residual
@@ -280,9 +257,6 @@ void hapticTask(){
   // are one-shot pulses, so firing a 0x82-zero ~HAPTIC_QUIET_MS after a swipe ends is the extra end-of-movement
   // click the real puck doesn't make. Steam forwards its own stop for any sustained haptic.
   if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) g_haptic82On=false;
-  // Haptic activity has gone idle for a while -> fire one re-init to clear any latch it left behind (the buzz
-  // that engages during/after use and won't self-clear, incl. after a mode switch). Fires only after a quiet
-  // gap, so it never interrupts active haptics; the brightness-less re-init is silent (settings, no play, no
-  // LED). Runs in ALL modes (the controller-side latch is mode-independent).
-  if (g_hapClearArmed && (millis()-g_haptic82Ms) > HAPTIC_CLEAR_IDLE_MS){ g_hapClearArmed=false; hapticReinit(); }
+  // NO periodic / idle-triggered re-init. The real puck inits the haptic engine ONCE at connect and never again;
+  // the old per-idle + 10Hz-flood re-init is exactly what drove the controller into the stuck buzz this removes.
 }
