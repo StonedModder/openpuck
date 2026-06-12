@@ -195,25 +195,16 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1){
 // controller falls into across a reconnect. Brightness (0x87 reg 2d) is deliberately OMITTED so we don't
 // stomp the LED. Enqueued onto the normal relay (drains in the poll cadence).
 void hapticReinit(){
-  // The haptic-subsystem re-init Steam/the real puck sends to (re)take control of the haptic engine: a 0x81 reset
-  // action plus 0x87 writes to the haptic registers (07/08/31/52, 18/2e/34/35), then two trailing 0x81 frames.
-  // Replaying it clears a latched/stuck haptic on the controller. Driven from the flood + reconnect re-init in
-  // hapticTask -- NOT one-shot: the connect buzz engages at a random point in the first ~minute, so we keep
-  // replaying this (10Hz for 30s on connect) until the latch clears.
-  //
-  // Deliberate deviation: the real puck's sequence leads with [0x30 ...] (register 0x30 = SETTING_GYRO_MODE; LED
-  // brightness is 0x2D, gyro mode 0x30). Replaying 0x30=0 there DISABLED the gyro, and since the controller
-  // streams gyro on by default we OMIT the 0x30 triplet entirely. Brightness (0x87 reg 2d) is likewise omitted
-  // so the flood doesn't flicker the user's LED.
-  static const uint8_t H30[]={0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
-  static const uint8_t H18[]={0x18,0x00,0x00,0x2e,0x00,0x00,0x34,0xff,0xff,0x35,0xff,0xff,0x34,0xff,0xff};
-  static const uint8_t H35[]={0x35,0xff,0xff,0x2e,0x00,0x00};
+  // Buzz-clear re-init, replayed by the flood at 10Hz/30s on connect. Deliver ONLY the 0x81 reset frames --
+  // EXACTLY what actually reached the controller on `main`, where connect buzzes were RARE. On `main` the 0x87
+  // writes in this sequence were sent with the wrong sub-TLV type and the controller DISCARDED them, so the
+  // flood was effectively just 0x81 reset spam. The framing fix (bf49c5f) made 0x87 writes LAND -- and flooding
+  // the haptic-config registers (07/08/31/52, 18/2e/34/35, incl. 0x34/0x35=0xffff) at 10Hz, which the real puck
+  // NEVER does (it sends them once at connect, if at all), is what spiked the connect buzz to ~every other
+  // connection. So the flooded re-init drops the 0x87 block and sends only the 0x81 resets, matching `main`.
   static const uint8_t T81A[]={0x00,0x00,0x00,0x00,0x00,0x00,0x00};
   static const uint8_t T81B[]={0x01,0x00,0x00,0x00,0x00,0x00,0x00};
   relayEnqueue(0x81, nullptr, 0);            // reset action (FUN_0001f554) -- Steam sends this first
-  relayEnqueue(0x87, H30, sizeof H30);
-  relayEnqueue(0x87, H18, sizeof H18);       // haptic config (enabled/amplifier/gain): the part that clears a latch
-  relayEnqueue(0x87, H35, sizeof H35);
   relayEnqueue(0x81, T81A, sizeof T81A);
   relayEnqueue(0x81, T81B, sizeof T81B);
 }
