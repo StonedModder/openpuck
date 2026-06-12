@@ -231,11 +231,25 @@ void hapticConnectInit(){
   static const uint8_t E2[]  = {0x01,0x20};        // 0xe2 setup -> e3 04 01 e2 02 01 20
   static const uint8_t R22[] = {0x22,0x64,0x00};   // 0x87 reg 0x22 = 0x0064
   static const uint8_t R23[] = {0x23,0x50,0x00};   // 0x87 reg 0x23 = 0x0050
+  // reg 0x30 = subsystem enable: bit 0x10 = gyro/IMU streaming, bit 0x08 = haptic engine. 0x0018 enables BOTH.
+  // This is THE missing piece: the real puck's connect init leads with 0x30=0x18, but we had been OMITTING 0x30
+  // entirely (after the gyro bug where flooding 0x30=0x00 froze the IMU). Result: the haptic-enable bit 0x08
+  // never got set, so the engine came up un-armed and latch-prone -> the connect buzz. We send 0x18 (NOT 0x00):
+  // arms the haptic engine AND keeps the gyro streaming (verified in the sniff: 0x30=0x00 freezes gyro; 0x18 is
+  // the puck's own enable value). Sent ONCE per connect, never flooded, so it can't re-break the gyro.
+  static const uint8_t H30[] = {0x30,0x18,0x00, 0x07,0x07,0x00, 0x08,0x07,0x00, 0x31,0x02,0x00, 0x52,0x03,0x00};
+  static const uint8_t H18[] = {0x18,0x00,0x00, 0x2e,0x00,0x00, 0x34,0xff,0xff, 0x35,0xff,0xff, 0x2e,0x00,0x00};
+  static const uint8_t H34[] = {0x34,0xff,0xff, 0x35,0xff,0xff};
+  static const uint8_t T81B[]= {0x01,0x00,0x00,0x00,0x00,0x00,0x00};
   relayEnqueue(0xdc, DC,  sizeof DC);
   relayEnqueue(0xe2, E2,  sizeof E2);
   relayEnqueue(0x87, R22, sizeof R22);
   relayEnqueue(0x87, R23, sizeof R23);
-  hapticReinit();   // then the haptic-engine register block + 0x81 resets (same as the puck's connect haptic init)
+  relayEnqueue(0x87, H30, sizeof H30);             // 0x30=0x18 enable + 07/08/31/52
+  relayEnqueue(0x87, H18, sizeof H18);             // 18/2e/34/35 haptic config
+  relayEnqueue(0x87, H34, sizeof H34);
+  relayEnqueue(0x81, nullptr, 0);                  // 0x81 reset bracket
+  relayEnqueue(0x81, T81B, sizeof T81B);           // final 0x81 [01 00 ..] (matches the puck's last connect frame)
 }
 void hapticInit(){
   g_rqHead = g_rqTail = 0; g_haptic82On=false;

@@ -91,17 +91,17 @@
         <div class="stat"><div class="k">Build (git)</div><div class="v" id="stBuild">—</div></div>
       </div>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
-      <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
+      <!-- Buzz-clear controls hidden: the connect-time haptic config (hapticConnectInit) prevents the stuck buzz
+           on its own, so the manual flood + the connect-time flood toggle aren't needed. Elements kept (display:none)
+           so the firmware op 0x07 / SET field 21 and their JS handlers still work if re-shown for debugging. -->
+      <div class="row" style="margin:10px 0 0;display:none"><button id="hapClear">Clear stuck buzz</button>
         <span class="note" style="flex:1">Manually (re)arm the buzz-clear flood now: replays the haptic re-init at 10&nbsp;Hz for 30&nbsp;s (same as pressing Steam). Use it if a buzz shows up right now.</span>
       </div>
-      <div class="row" style="margin:10px 0 0"><label>Connect-time flood</label><button id="buzzFlood">off</button>
+      <div class="row" style="margin:10px 0 0;display:none"><label>Connect-time flood</label><button id="buzzFlood">off</button>
         <span class="note" style="flex:1">The copycat now sends the real puck's full haptic config once on connect, which should keep the buzz from ever latching. If a board <em>still</em> buzzes in the first minute, turn this <strong>on</strong> to also flood the buzz-clear re-init at 10&nbsp;Hz for 30&nbsp;s after every connect. Off by default; persists across reboots.</span>
       </div>
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller (test)</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path host-suspend uses. Watch the capture / link status to see if the controller actually disconnects.</span>
-      </div>
-      <div class="row" style="margin:10px 0 0"><input type="color" id="ledColor" value="#ffffff"><button id="ledSet">Set LED color</button>
-        <span class="note" style="flex:1">Sends the controller LED-color command (0xC1 RGBW). Brightness is separate (Steam's 0x87 reg 2d).</span>
       </div>
       <div class="row" style="margin:18px 0 0;border-top:1px solid #4a2030;padding-top:14px">
         <button id="factoryErase" style="background:#3a1420;border-color:#7a2233;color:#ff9bb0;font-weight:600">⚠ Factory erase</button>
@@ -352,7 +352,6 @@ $("#capStop").onclick=stopCapture;
 let buzzFloodTimer=null;
 $("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); $("#hapClear").classList.add("active"); clearTimeout(buzzFloodTimer); buzzFloodTimer=setTimeout(()=>$("#hapClear").classList.remove("active"),30000); log("buzz-clear flood armed — 10Hz re-init for 30s (click again to restart)"); } };
 $("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status / capture"); } };
-$("#ledSet").onclick=async()=>{ if(dev){ const h=$("#ledColor").value; const r=parseInt(h.substr(1,2),16),g=parseInt(h.substr(3,2),16),b=parseInt(h.substr(5,2),16); await send([0x09,r,g,b]); log(`LED color set ${h} (r${r} g${g} b${b})`); } };
 $("#factoryErase").onclick=async()=>{
   if(!dev){ log("not connected"); return; }
   // Triple gate so this is impossible to fire accidentally: warn, warn harder, then require typing ERASE.
