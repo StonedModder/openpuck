@@ -69,7 +69,7 @@ uint32_t psButtonsFromSteam(uint32_t raw){
 uint8_t psShouldersByte(uint32_t b){
   return ((b&TB_LB)?0x01:0)|((b&TB_RB)?0x02:0)
          |((g_in.lt>SW_TRIG_ON||(b&0x8000000u))?0x04:0)|((g_in.rt>SW_TRIG_ON||(b&0x800000u))?0x08:0)
-         |((b&TB_MENU)?0x10:0)|((b&TB_VIEW)?0x20:0)   // Menu=Options, View=Create/Share
+         |((b&TB_VIEW)?0x10:0)|((b&TB_MENU)?0x20:0)   // View=Create/Share(bit4), Menu=Options(bit5)
          |((b&TB_L3)?0x40:0)|((b&TB_R3)?0x80:0);
 }
 uint8_t psHatNibble(uint32_t b){

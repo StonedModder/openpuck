@@ -199,7 +199,15 @@ void hapticReinit(){
   // and proven to clear a stuck haptic. Replayed verbatim and in order (no trimming this time: the brightness
   // write 0x87[2d] and the two 7-byte 0x81 frames are part of what Steam sends, and dropping them may be why
   // the trimmed version didn't always clear the connect buzz).
-  static const uint8_t H30[]={0x30,0x00,0x00,0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
+  // The leading triplet of Steam's captured sequence is [0x30 00 00] -- register 0x30 is SETTING_GYRO_MODE
+  // (Steam Controller register map: LED brightness 0x2D, gyro mode 0x30), and 0x0000 turns the IMU OFF. Steam
+  // writes it then re-enables gyro with its own follow-up; we only replay the haptic-clear subset, so replaying
+  // 0x30=0 just KILLS the gyro -- and this re-init fires on every reconnect (a mode-switch reboot), repeatedly
+  // across the buzz-flood, and after every haptic idle. That is the "gyro randomly stops, typically after
+  // switching to ps5/switch mode" bug. The controller streams gyro by default (it works on a fresh connect
+  // before any re-init), so the fix is to NOT touch reg 0x30 here. The 0x07/0x08/0x31/0x52 writes that remain
+  // are the haptic-engine registers that actually clear the latch.
+  static const uint8_t H30[]={0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
   static const uint8_t H18[]={0x18,0x00,0x00,0x2e,0x00,0x00,0x34,0xff,0xff,0x35,0xff,0xff,0x34,0xff,0xff};
   static const uint8_t H35[]={0x35,0xff,0xff,0x2e,0x00,0x00};
   static const uint8_t T81A[]={0x00,0x00,0x00,0x00,0x00,0x00,0x00};

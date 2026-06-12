@@ -8,6 +8,37 @@
 
 HidGyroController g_hidGyroCtl;
 
+// DS4 calibration blob for feature report 0x02 (36 data bytes; TinyUSB prepends the 0x02 report id -> 37 bytes,
+// what hid-sony expects). Same byte layout and kernel math as DS5 (see mode_ps5.cpp DS5_CALIB for the full
+// derivation): both use DS4_GYRO_RES_PER_DEG_S=1024, DS4_ACC_RES_PER_G=8192, speed_2x = speed_plus + speed_minus
+// (locals are `short`), gyro denom = pitch_plus - pitch_minus, accel bias = acc_plus - range/2.
+// CRITICAL: speed_plus AND speed_minus must BOTH be POSITIVE -- the old blob stored speed_minus as -438, so
+// speed_2x = 438 + (-438) = 0 -> sens_numer = 0 -> dead gyro. Scale assumes ±2000 deg/s (16.384 LSB per deg/s)
+// and ±2 g (16384 LSB/g) raw; trim the pitch/yaw/roll +/- (gyro) or accel +/- (accel) if magnitude is off.
+static const uint8_t DS4_CALIB[] = {
+  0x00,0x00, 0x00,0x00, 0x00,0x00,   // gyro pitch/yaw/roll bias = 0
+  0x00,0x08, 0x00,0xF8,              // gyro pitch plus=+2048 / minus=-2048
+  0x00,0x08, 0x00,0xF8,              // gyro yaw   plus=+2048 / minus=-2048
+  0x00,0x08, 0x00,0xF8,              // gyro roll  plus=+2048 / minus=-2048
+  0x7D,0x00, 0x7D,0x00,              // gyro speed+ =+125 / speed- =+125 (BOTH positive -> speed_2x=250)
+  0x00,0x40, 0x00,0xC0,              // accel X plus=+16384 / minus=-16384 (range 32768 -> /2)
+  0x00,0x40, 0x00,0xC0,              // accel Y
+  0x00,0x40, 0x00,0xC0,              // accel Z
+  0x00,0x00,                         // padding to 36
+};
+
+static uint16_t hidGyroGet(uint8_t rid, hid_report_type_t type, uint8_t* buf, uint16_t reqlen) {
+  if (type != HID_REPORT_TYPE_FEATURE || reqlen == 0) return 0;
+  memset(buf, 0, reqlen);
+  if (rid == 0x02) {
+    uint16_t n = (uint16_t)sizeof(DS4_CALIB);
+    if (n > reqlen) n = reqlen;
+    memcpy(buf, DS4_CALIB, n);
+    return n;
+  }
+  return reqlen;
+}
+
 static const uint8_t GYRO_HID_DESC[]={
   0x05,0x01,0x09,0x05,0xA1,0x01,0x85,0x01,0x09,0x30,0x09,0x31,0x09,0x32,0x09,0x35,
   0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x04,0x81,0x02,0x09,0x39,0x15,0x00,0x25,
@@ -60,6 +91,7 @@ void HidGyroController::begin(){
   USBDevice.setProductDescriptor("Wireless Controller");
   g_hidGyro.enableOutEndpoint(true);
   g_hidGyro.setReportDescriptor(GYRO_HID_DESC, sizeof GYRO_HID_DESC);
+  g_hidGyro.setReportCallback(hidGyroGet, nullptr);
   g_hidGyro.setPollInterval(4);
   g_hidGyro.begin();
 }

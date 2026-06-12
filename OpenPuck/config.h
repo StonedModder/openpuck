@@ -65,6 +65,10 @@ extern uint16_t g_loopWorstUs;
 
 void loadCfg();
 void saveCfg();
+// FULL factory wipe: reformat the internal LittleFS, erasing cfg.bin (modes/tunables/chords) AND bonds.bin
+// (paired controller). Irreversible; the caller reboots so the next boot comes up on clean defaults and the
+// controller must be re-paired. Gated behind explicit confirmation at every call site.
+void factoryErase();
 // Mode switch (chord / WebUI): persist mode if the toggle is on, else arm a one-shot so this reboot lands in
 // the new mode but the next cold boot returns to Steam. Either way saveCfg + caller reboots.
 void saveMode(uint8_t m);

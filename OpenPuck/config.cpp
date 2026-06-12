@@ -64,3 +64,14 @@ void saveMode(uint8_t m){
 }
 
 void armDebugCdcNextBoot(){ g_debugCdc = 1; saveCfg(); }   // next boot keeps CDC; loadCfg() consumes it after
+
+// FULL factory wipe: erase ALL persistent storage in one shot -- cfg.bin (modes/tunables/chords), bonds.bin
+// (the paired-controller record), and anything else living in the internal LittleFS. format() reformats the
+// whole filesystem, so there's nothing left to selectively miss. The caller is expected to reboot immediately
+// (NVIC_SystemReset): on the next boot loadCfg()/loadBonds() find no files and fall back to clean defaults,
+// and the controller must be re-paired. Destructive and irreversible -- gated behind explicit confirmation at
+// every call site (serial "ERASE-ALL", WebUSB op 0x0A magic, both with on-screen warnings).
+void factoryErase(){
+  InternalFS.begin();      // ensure mounted before we reformat (no-op if already up)
+  InternalFS.format();     // wipes cfg.bin + bonds.bin + the entire FS
+}

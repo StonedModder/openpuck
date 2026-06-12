@@ -8,6 +8,44 @@
 
 Ps5Controller g_ps5Ctl;
 
+// DS5 calibration blob for feature report 0x05 (40 data bytes; TinyUSB prepends the 0x05 report id, so the
+// host receives the 41 bytes hid-playstation expects). hid-playstation/SDL read this to scale the raw IMU.
+// Layout (signed-LE16, kernel buf[1..] == blob[0..]): pitch/yaw/roll bias, pitch+/-, yaw+/-, roll+/-, speed+/-,
+// accel x/y/z +/-. Kernel math (all locals are `short`):
+//   gyro:  out = raw * (speed_2x * 1024) / (|pitch_plus| + |pitch_minus|),  speed_2x = speed_plus + speed_minus
+//   accel: out = (raw - bias) * (2*8192) / (acc_plus - acc_minus),  bias = acc_plus - range/2
+// CRITICAL: speed_plus AND speed_minus are SPEED MAGNITUDES and must BOTH be POSITIVE -- they're summed. The
+// old blob stored speed_minus as -1024 (0xFC00), so speed_2x = 1024 + (-1024) = 0 -> sens_numer = 0 -> EVERY
+// gyro axis multiplied by zero -> dead gyro. Only the per-axis pitch/yaw/roll_minus are negative (they feed an
+// abs() range). Scale assumes the controller's raw IMU is the common 16-bit default ±2000 deg/s (16.384 LSB per
+// deg/s) and ±2 g (16384 LSB/g): gyro ratio = speed_2x*1024/range = 250*1024/4096 = 62.5 = 1024/16.384 (-> out
+// in the kernel's 1024-per-deg/s units); accel ratio = 16384/32768 = 0.5 (16384 LSB/g raw -> 8192 LSB/g out).
+// If the gyro/accel magnitude reads too hot or too cold, the controller's true LSB-per-unit differs -- scale
+// the pitch/yaw/roll +/- (gyro) or the accel +/- (accel) by the same factor. See PROTOCOL.md §8.
+static const uint8_t DS5_CALIB[] = {
+  0x00,0x00, 0x00,0x00, 0x00,0x00,   // gyro pitch/yaw/roll bias = 0
+  0x00,0x08, 0x00,0xF8,              // gyro pitch plus=+2048 / minus=-2048
+  0x00,0x08, 0x00,0xF8,              // gyro yaw   plus=+2048 / minus=-2048
+  0x00,0x08, 0x00,0xF8,              // gyro roll  plus=+2048 / minus=-2048
+  0x7D,0x00, 0x7D,0x00,              // gyro speed+ =+125 / speed- =+125 (BOTH positive -> speed_2x=250)
+  0x00,0x40, 0x00,0xC0,              // accel X plus=+16384 / minus=-16384 (range 32768 -> /2)
+  0x00,0x40, 0x00,0xC0,              // accel Y
+  0x00,0x40, 0x00,0xC0,              // accel Z
+  0x00,0x00, 0x00,0x00, 0x00,0x00,   // padding to 40
+};
+
+static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t* buf, uint16_t reqlen) {
+  if (type != HID_REPORT_TYPE_FEATURE || reqlen == 0) return 0;
+  memset(buf, 0, reqlen);
+  if (rid == 0x05) {
+    uint16_t n = (uint16_t)sizeof(DS5_CALIB);
+    if (n > reqlen) n = reqlen;
+    memcpy(buf, DS5_CALIB, n);
+    return n;
+  }
+  return reqlen;
+}
+
 static const uint8_t PS5_HID_DESC[]={
   0x05,0x01,0x09,0x05,0xA1,0x01,0x85,0x01,0x09,0x30,0x09,0x31,0x09,0x32,0x09,0x35,
   0x09,0x33,0x09,0x34,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x06,0x81,0x02,0x06,
@@ -62,6 +100,7 @@ void Ps5Controller::begin(){
   USBDevice.setProductDescriptor("DualSense Wireless Controller");
   g_ps5.enableOutEndpoint(true);
   g_ps5.setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
+  g_ps5.setReportCallback(ps5Get, nullptr);
   g_ps5.setPollInterval(4);
   g_ps5.begin();
 }

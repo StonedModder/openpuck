@@ -72,8 +72,8 @@ void webusbPoll(){
     // process complete commands from the front of buf
     for(;;){
       if(n==0) break;
-      uint8_t op=buf[0]; uint8_t need = (op==0x02)?3 : (op==0x03||op==0x05)?2 : (op==0x09)?4 : 1;   // 0x05 carries a value byte; 0x09 carries R,G,B
-      if(op<0x01 || op>0x09){ // resync: drop one byte
+      uint8_t op=buf[0]; uint8_t need = (op==0x02)?3 : (op==0x03||op==0x05)?2 : (op==0x09||op==0x0A)?4 : 1;   // 0x05 carries a value byte; 0x09 carries R,G,B; 0x0A carries a 3-byte magic
+      if(op<0x01 || op>0x0A){ // resync: drop one byte
         memmove(buf,buf+1,--n); continue;
       }
       if(n<need) break;                      // wait for more bytes
@@ -84,6 +84,11 @@ void webusbPoll(){
 #endif
       else if(op==0x07){ hapticArmBuzzFlood(); hapticReinit(); }   // (re)arm the 30s 10Hz buzz-clear flood; fire one now for instant feedback
       else if(op==0x08){ hapticSendShutdown(); }                   // TEST: trigger the controller power-off attempt (same path host-suspend uses)
+      else if(op==0x0A){                                           // FULL factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
+        // Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it; the panel double-
+        // confirms before sending. Irreversible -- the controller must be re-paired afterwards.
+        if(buf[1]==0x45 && buf[2]==0x52 && buf[3]==0x53){ usb_web.flush(); factoryErase(); delay(40); NVIC_SystemReset(); }
+      }
       else if(op==0x09){                                           // set LED color: feature-0x01 cmd 0xC1, 16-byte RGBW payload (from led-set capture)
         uint8_t led[16]={buf[1],buf[2],buf[3],0xff, 0x03,0x09,0x05, 0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff};   // [R][G][B][W=ff][03 09 05][ff x9] -- captured frame, RGB substituted
         relayEnqueue(0xC1, led, sizeof led);

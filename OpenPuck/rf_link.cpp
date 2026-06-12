@@ -190,7 +190,15 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t plen, u
             g_in.lt=trigU8(u16off(rep,4));   g_in.rt=trigU8(u16off(rep,6));   // for the Switch digital-trigger threshold
             g_in.lpx=(int16_t)s16off(rep,16); g_in.lpy=(int16_t)s16off(rep,18);
             g_in.rpx=(int16_t)s16off(rep,22); g_in.rpy=(int16_t)s16off(rep,24);
-            imuFrom45(rep, &g_in.ax,&g_in.ay,&g_in.az,&g_in.gx,&g_in.gy,&g_in.gz);
+            // IMU lives at report bytes 0x22..0x2D (rep[34..45]). Decode it ONLY when a FULL 46-byte report
+            // was actually received -- bounded by `end` (the received length), NOT sizeof(rfrx) (the whole
+            // buffer). The outer gate is tlen>=28 (enough for buttons/sticks/pads, which end at rep[27]), so a
+            // short 0x45 (button-only frame, or one whose IMU tail was lost) still passes it; without this guard
+            // imuFrom45 would read STALE bytes past the received data and clobber g_in's gyro/accel -- the "gyro
+            // randomly stops/glitches" bug, only visible in the stream modes (PS5/Switch) that emit g_in's IMU.
+            // On a short frame we leave the last good IMU in place rather than injecting garbage.
+            if(tlen>=46 && (size_t)(idx+2)+46<=(size_t)end)
+              imuFrom45(rep, &g_in.ax,&g_in.ay,&g_in.az,&g_in.gx,&g_in.gy,&g_in.gz);
             // Mode-switch chord (all 4 back + face): don't leak the face press to the host. g_in.buttons stays
             // intact so the chord detector still fires; per-mode builders mask the same bits while back-4 held.
             if((bb&CHORD_BACK4)==CHORD_BACK4)

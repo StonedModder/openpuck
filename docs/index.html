@@ -99,6 +99,10 @@
       <div class="row" style="margin:10px 0 0"><input type="color" id="ledColor" value="#ffffff"><button id="ledSet">Set LED color</button>
         <span class="note" style="flex:1">Sends the controller LED-color command (0xC1 RGBW). Brightness is separate (Steam's 0x87 reg 2d).</span>
       </div>
+      <div class="row" style="margin:18px 0 0;border-top:1px solid #4a2030;padding-top:14px">
+        <button id="factoryErase" style="background:#3a1420;border-color:#7a2233;color:#ff9bb0;font-weight:600">⚠ Factory erase</button>
+        <span class="note" style="flex:1"><strong style="color:#ff9bb0">Danger:</strong> wipes <em>all</em> persistent storage on the copycat — the paired controller bond <em>and</em> every saved setting (mode, chords, back-paddle map, sensitivity). The copycat reboots to factory defaults and you must <strong>re-pair the controller</strong>. This cannot be undone.</span>
+      </div>
     </div>
 
     <div class="card" id="mouseCard">
@@ -336,6 +340,17 @@ let buzzFloodTimer=null;
 $("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); $("#hapClear").classList.add("active"); clearTimeout(buzzFloodTimer); buzzFloodTimer=setTimeout(()=>$("#hapClear").classList.remove("active"),30000); log("buzz-clear flood armed — 10Hz re-init for 30s (click again to restart)"); } };
 $("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status / capture"); } };
 $("#ledSet").onclick=async()=>{ if(dev){ const h=$("#ledColor").value; const r=parseInt(h.substr(1,2),16),g=parseInt(h.substr(3,2),16),b=parseInt(h.substr(5,2),16); await send([0x09,r,g,b]); log(`LED color set ${h} (r${r} g${g} b${b})`); } };
+$("#factoryErase").onclick=async()=>{
+  if(!dev){ log("not connected"); return; }
+  // Triple gate so this is impossible to fire accidentally: warn, warn harder, then require typing ERASE.
+  if(!confirm("Factory erase?\n\nThis wipes ALL persistent storage on the copycat:\n  • the paired-controller bond (you'll have to re-pair)\n  • every saved setting (mode, chords, back paddles, sensitivity)\n\nThe copycat reboots to factory defaults. This CANNOT be undone.")) return;
+  if(!confirm("Are you absolutely sure?\n\nThere is no recovery. The controller bond and all settings will be gone.")) return;
+  const typed=prompt('Final confirmation — type  ERASE  (all caps) to wipe everything:');
+  if(typed!=="ERASE"){ log("factory erase cancelled (confirmation text did not match)"); return; }
+  // op 0x0A + magic "ERS" (0x45,0x52,0x53) -- firmware reformats the FS and reboots; the device drops off USB.
+  await send([0x0A,0x45,0x52,0x53]);
+  log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
+};
 $("#abSwap").onclick=()=>{ const on=$("#abSwap").classList.contains("active"); setField(4, on?0:1); };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 for(const id of ["mDiv","mFric"]){

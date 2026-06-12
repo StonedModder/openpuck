@@ -8,6 +8,7 @@
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <stdlib.h>
+#include <string.h>
 
 // CDC commands: l=listen, s=stop, cN=channel, p<hex>=prefix, a<8hex>=base addr, b=bonds, etc.
 // NOTE: command order matters -- this is an else-if chain, so the FIRST matching letter wins. A couple of
@@ -17,7 +18,11 @@ void serialConsolePoll(){
   while (Serial.available()){
     char c=Serial.read();
     if (c=='\n'||c=='\r'){ line[li]=0;
-      if (line[0]=='l') rfListenStart();
+      // FULL factory wipe -- requires the exact word "ERASE-ALL" (not a single letter) so it can't be fat-
+      // fingered. Reformats the internal FS (cfg.bin + bonds.bin gone), then reboots into clean defaults; the
+      // controller must be re-paired afterwards.
+      if (!strcmp(line,"ERASE-ALL")){ Serial.println("# ERASING ALL persistent storage (config + bonds)..."); factoryErase(); Serial.println("# done -- rebooting into clean defaults; re-pair the controller"); delay(40); NVIC_SystemReset(); }
+      else if (line[0]=='l') rfListenStart();
       else if (line[0]=='B'){ g_rfBeacon=!g_rfBeacon; g_rfListen=false; Serial.printf("# beacon %s ch%u\n",g_rfBeacon?"ON":"off",g_rfCh); }
       else if (line[0]=='L'){ g_plen=strtol(line+1,0,16); Serial.printf("# plen=%02X\n",g_plen); }
       else if (line[0]=='1'){ g_s1incl=!g_s1incl; Serial.printf("# s1incl=%u\n",g_s1incl); }
