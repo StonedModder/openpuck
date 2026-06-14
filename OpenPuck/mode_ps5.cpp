@@ -44,7 +44,7 @@ static void ps5Build(uint8_t out[63]){
   out[8]=psShouldersByte(b);
   out[9]=((b&TB_STEAM)?0x01:0)|((b&TB_LPADC||b&TB_RPADC)?0x02:0);
   out[15]=g_in.gx&0xFF; out[16]=g_in.gx>>8;
-  out[17]=g_in.gz&0xFF; out[18]=g_in.gz>>8;
+   out[17]=(-g_in.gz)&0xFF; out[18]=(-g_in.gz)>>8;
   out[19]=g_in.gy&0xFF; out[20]=g_in.gy>>8;
   out[21]=g_in.ax&0xFF; out[22]=g_in.ax>>8;
   out[23]=g_in.ay&0xFF; out[24]=g_in.ay>>8;
