@@ -1,6 +1,6 @@
 // puck_hid.h -- the Steam Controller puck personality (MODE_STEAM + MODE_LIZARD).
 //
-// This is the controller that wears Valve's Steam Controller dongle identity and exposes the four puck HID slot interfaces
+// This is the controller that wears Valve's Proteus puck identity (28DE:1304) and exposes the four puck HID slot interfaces
 // (interface N owns bond slot N). It implements:
 //   - the puck feature COMMAND CHANNEL (handleSet/handleGet): reports 0x83/0xAE/0xB4/0xAD/0xA2/0xA3 the host
 //     uses to read attributes/serials and read/write/clear bond slots, plus the host->controller haptic relay

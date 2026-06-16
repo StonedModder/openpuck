@@ -14,8 +14,7 @@ uint8_t g_fwdNewOnly = 1;
 SteamPuckController g_steamPuck;
 
 // ---- cloned puck HID report descriptor: mouse(0x40)+keyboard(0x41)+vendor(FF00) with the 63-byte FEATURE
-//      command reports on report id 1/2. Steam mode also declares input report 0x01 for SDL's Steam HIDAPI
-//      compatibility stream (ValveInReport packets). Each of the 4 interfaces uses this. ----
+//      command reports on report id 1/2. Each of the 4 interfaces uses this. ----
 static const uint8_t PUCK_HID_DESC[] = {
   0x05,0x01,0x09,0x02,0xA1,0x01,0x85,0x40,0x09,0x01,0xA1,0x00,0x05,0x09,0x19,0x01,
   0x29,0x02,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x02,0x81,0x02,0x75,0x06,0x95,0x01,
@@ -39,7 +38,7 @@ static const uint8_t PUCK_HID_DESC[] = {
   0x95,0x03,0x09,0x86,0x91,0x02,0x85,0x87,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,
   0x3F,0x09,0x87,0x91,0x02,0x85,0x89,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x3F,
   0x09,0x89,0x91,0x02,0x85,0x88,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x3F,0x09,
-  0x88,0x91,0x02,0x85,0x01,0x95,0x2F,0x09,0x01,0x81,0x02,0x85,0x01,0x95,0x3F,0x09,0x01,0xB1,0x02,0x85,0x02,0x95,0x3F,0x09,
+  0x88,0x91,0x02,0x85,0x01,0x95,0x3F,0x09,0x01,0xB1,0x02,0x85,0x02,0x95,0x3F,0x09,
   0x01,0xB1,0x02,0xC0
 };
 
@@ -68,15 +67,13 @@ static const uint8_t PUCK_LIZARD_HID_DESC[] = {
   0x95,0x03,0x09,0x86,0x91,0x02,0x85,0x87,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,
   0x3F,0x09,0x87,0x91,0x02,0x85,0x89,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x3F,
   0x09,0x89,0x91,0x02,0x85,0x88,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x3F,0x09,
-  0x88,0x91,0x02,0x85,0x01,0x95,0x2F,0x09,0x01,0x81,0x02,0x85,0x01,0x95,0x3F,0x09,0x01,0xB1,0x02,0x85,0x02,0x95,0x3F,0x09,
+  0x88,0x91,0x02,0x85,0x01,0x95,0x3F,0x09,0x01,0xB1,0x02,0x85,0x02,0x95,0x3F,0x09,
   0x01,0xB1,0x02,0xC0,
   0x05,0x0C,0x09,0x01,0xA1,0x01,0x85,0x03,0x15,0x00,0x25,0x01,0x09,0xE9,0x09,0xEA,
   0x75,0x01,0x95,0x02,0x81,0x02,0x75,0x06,0x95,0x01,0x81,0x01,0xC0
 };
 
 static Adafruit_USBD_HID hid[NSLOT];
-
-static uint32_t g_sdlPacketNum = 0;
 
 // ===================== seamless LIZARD decision =====================
 // Steam, while running, re-sends settings report 0x87 (lizard-off) every ~3s as a heartbeat (captured on HW),
@@ -94,47 +91,7 @@ static bool g_autoLizard = true;            // master switch; false => Steam mod
 // the controller while presenting lizard (Steam isn't reading 0x45 back), Steam loops the same haptic -> buzz.
 static inline bool steamDrivingGamepad(){ return g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS); }
 static inline bool lizardActive(){ return modeIsPuck(g_usbMode) && (g_usbMode==MODE_LIZARD || (g_autoLizard && !steamDrivingGamepad())); }
-static void put16(uint8_t* p, int16_t v){ p[0]=(uint8_t)v; p[1]=(uint8_t)((uint16_t)v>>8); }
-static void putu16(uint8_t* p, uint16_t v){ p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); }
-static void put32(uint8_t* p, uint32_t v){ p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24); }
-static void put64(uint8_t* p, uint64_t v){ for(uint8_t i=0;i<8;i++) p[i]=(uint8_t)(v>>(8*i)); }
-static uint16_t sdlTrigger(uint8_t v){ return (uint16_t)(((uint32_t)v * 26000u + 127u) / 255u); }
-static uint64_t sdlButtons(uint32_t b){
-  uint64_t s=0;
-  if(b&TB_RB)s|=0x00000004ull; if(b&TB_LB)s|=0x00000008ull;
-  if(b&TB_Y)s|=0x00000010ull;  if(b&TB_B)s|=0x00000020ull;
-  if(b&TB_X)s|=0x00000040ull;  if(b&TB_A)s|=0x00000080ull;
-  if(b&TB_DUP)s|=0x00000100ull; if(b&TB_DRT)s|=0x00000200ull;
-  if(b&TB_DLF)s|=0x00000400ull; if(b&TB_DDN)s|=0x00000800ull;
-  if(b&TB_VIEW)s|=0x00001000ull; if(b&TB_STEAM)s|=0x00002000ull;
-  if(b&TB_MENU)s|=0x00004000ull; if(b&TB_L4)s|=0x00008000ull; if(b&TB_R4)s|=0x00010000ull;
-  if(b&TB_LPADC)s|=0x00020000ull; if(b&TB_RPADC)s|=0x00040000ull;
-  if(b&TB_LPADT)s|=0x00080000ull; if(b&TB_RPADT)s|=0x00100000ull;
-  if(b&TB_L3)s|=0x00400000ull;
-  return s;
-}
-static void sendSdlWirelessEvent(uint8_t slot, bool connected){
-  uint8_t p[4]={0x00,0x03,0x01,(uint8_t)(connected?0x02:0x01)}; // report id 1 supplies version low byte
-  hid[slot].sendReport(0x01, p, sizeof p);
-}
-static void sendSdlState(uint8_t slot){
-  uint8_t p[47]; memset(p,0,sizeof p);        // report id 1 + payload => ValveInReportHeader starts 01 00 01 2C
-  p[0]=0x00; p[1]=0x01; p[2]=44;              // version high, type=controller state, payload length
-  put32(p+3, ++g_sdlPacketNum);
-  put64(p+7, sdlButtons(g_in.buttons));
-  put16(p+15, g_in.lpx); put16(p+17, g_in.lpy);
-  put16(p+19, g_in.rpx); put16(p+21, g_in.rpy);
-  putu16(p+23, sdlTrigger(g_in.lt)); putu16(p+25, sdlTrigger(g_in.rt));
-  put16(p+27, g_in.ax); put16(p+29, g_in.ay); put16(p+31, g_in.az);
-  put16(p+33, g_in.gx); put16(p+35, g_in.gy); put16(p+37, g_in.gz);
-  hid[slot].sendReport(0x01, p, sizeof p);
-}
-static void sendSdlCompatReports(bool state){
-  if(g_usbMode != MODE_STEAM) return;
-  if(g_connSlot < 0 || g_connSlot >= NSLOT || !hid[g_connSlot].ready()) return;
-  if(state) sendSdlState((uint8_t)g_connSlot);
-  else sendSdlWirelessEvent((uint8_t)g_connSlot, true);
-}
+static inline void hostStampAlive(){ g_steamAliveMs = millis(); }
 // Right after the host resumes from suspend, MUTE input forwarding briefly. Otherwise the controller's input
 // in that instant (a trackpad click/trigger, or residual button state from the wake gesture) gets forwarded
 // as a real click/keypress into the just-woken desktop -- which was activating the highlighted Start tile
@@ -154,7 +111,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
     // pushed here -- 0x87 (lizard-off/settings) reaches the controller through the feature-0x01 passthrough path.
     if (rid >= 0x80 && rid <= 0x89) {
       hapLogAdd((uint8_t)slot, rid, b, n);   // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
-      g_steamAliveMs = millis();   // ANY Steam OUTPUT report (not just the 0x87 heartbeat) means Steam is present and
+      hostStampAlive();   // ANY Steam OUTPUT report (not just the 0x87 heartbeat) means Steam is present and
                                    // driving -> leave lizard for gamepad NOW, so a haptic that arrives before the
                                    // first 0x87 doesn't get relayed while we're still presenting lizard (-> buzz loop).
     }
@@ -182,7 +139,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   Slot &S = g_slot[slot];
   uint8_t cmd = b[0], len = (n > 1) ? b[1] : 0;
   const uint8_t *pl = b + 2; uint16_t pln = (n >= 2) ? n - 2 : 0;
-  if (cmd >= 0x80 && cmd <= 0x89) g_steamAliveMs = millis();   // any Steam settings/haptic/LED report (incl. the 0x87 lizard-off heartbeat) -> Steam present, forward gamepad, suppress auto-lizard
+  if (cmd >= 0x80 && cmd <= 0x89) hostStampAlive();   // settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
   // Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
   // confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown()
   // bursts it for NO-ACK reliability (the single hook the test button + host-suspend also drive).
@@ -219,9 +176,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
       uint8_t idx = pln > 0 ? pl[0] : 1; const char *s = (idx == 0) ? g_board : (idx == 1) ? g_unit : "NA";
       S.resp[0] = 0xAE; S.resp[1] = 0x14; S.resp[2] = idx; memset(S.resp + 3, 0, 60); memcpy(S.resp + 3, s, strlen(s)); S.resp_len = 63; break; }
     case 0xB4:    // connection/version state per slot: value 0x02 = controller connected, 0x01 = not
+      hostStampAlive();   // SDL Triton polls this on init; treat like Steam contact so we forward 0x45
       S.resp[0] = 0xB4; S.resp[1] = 0x01;
       S.resp[2] = (slot == g_connSlot && !g_xbox && (millis() - g_connReplyMs < 500)) ? 0x02 : 0x01;
-      if (g_usbMode == MODE_STEAM && S.resp[2] == 0x02 && hid[slot].ready()) sendSdlWirelessEvent((uint8_t)slot, true);
       S.resp_len = 63; break;
     case 0xAD:
       g_pairing = (pln > 0 && pl[0] != 0); Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
@@ -243,6 +200,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
 static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type, uint8_t *buf, uint16_t reqlen) {
   (void)rid;
   if (type != HID_REPORT_TYPE_FEATURE) return 0;
+  if (g_usbMode == MODE_STEAM) hostStampAlive();   // host reading feature data => gamepad consumer active (Steam/SDL)
   Slot &S = g_slot[slot];
   uint16_t n = S.resp_len ? S.resp_len : 63; if (n > reqlen) n = reqlen;
   memcpy(buf, S.resp, n); return n;
@@ -260,19 +218,15 @@ static setcb_t SETCB[NSLOT] = { setcb0, setcb1, setcb2, setcb3 };
 
 // ===================== IController =====================
 void SteamPuckController::begin(){
-  // SDL's Steam HIDAPI driver recognizes Valve's original wireless dongle PID (0x1142) as the 4-slot Steam
-  // Controller receiver. The newer puck PID (0x1304) works for Steam, but many SDL builds don't route it
-  // through the Steam Controller driver, so apps never see a joystick. Keep the puck protocol/descriptor, but
-  // wear the classic dongle USB identity for broad SDL compatibility.
-  USBDevice.setID(0x28DE, 0x1142);
+  USBDevice.setID(0x28DE, 0x1304);
   // Distinct bcdDevice so Windows keys a FRESH usbflags entry (cache is VID:PID:bcdDevice) and actually runs
   // MS OS 2.0 / WinUSB binding for the WebUSB vendor interface -- instead of reusing a stale "no WinUSB" entry
-  // tied to the real Valve dongle, which has no WebUSB interface. The normal (wake-mouse) and
+  // tied to the real Steam Controller (28DE:1304), which has no WebUSB interface. The normal (wake-mouse) and
   // one-shot debug (CDC) boots present DIFFERENT interface sets, so they use DIFFERENT bcdDevice values --
   // otherwise Windows would serve one's cached descriptor for the other when you reboot between them.
   USBDevice.setDeviceVersion(g_debugCdcThisBoot ? 0x0212 : (g_usbMode == MODE_LIZARD ? 0x0213 : 0x0211));
   USBDevice.setManufacturerDescriptor("Valve Software");
-  USBDevice.setProductDescriptor("Steam Controller Dongle");
+  USBDevice.setProductDescriptor("Steam Controller Puck");
   const uint8_t* desc = (g_usbMode == MODE_LIZARD) ? PUCK_LIZARD_HID_DESC : PUCK_HID_DESC;
   const uint16_t descLen = (g_usbMode == MODE_LIZARD) ? sizeof PUCK_LIZARD_HID_DESC : sizeof PUCK_HID_DESC;
   for (int i = 0; i < NSLOT; i++) {
@@ -303,8 +257,7 @@ void SteamPuckController::onReport45(const uint8_t* rep, bool fresh, uint8_t bod
     // FRESH reports (the real puck dedupes -> Steam gets a clean unique stream; sending stale repeats makes
     // Steam's velocity/smoothing stair-step). g_fwdNewOnly toggles for A/B.
     if((fresh || !g_fwdNewOnly) && g_slot[g_connSlot].used && hid[g_connSlot].ready())
-      hid[g_connSlot].sendReport(0x45, rep+1, blen);   // Steam/SDL: input report -> "connected"
-    if(fresh) sendSdlCompatReports(true);
+      hid[g_connSlot].sendReport(0x45, rep+1, blen);   // Steam/SDL Triton: input report 0x45
   }
 }
 
@@ -356,13 +309,8 @@ void SteamPuckController::task(){
     wasSusp=susp; }
   if (USBDevice.suspended()) return;   // no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
   static bool usbConn=false; static unsigned long last79=0, last7B=0, connEdgeMs=0;
-  static unsigned long lastSdlCompat=0;
   bool conn = (g_connSlot>=0 && millis()-g_connReplyMs < 300);
   if (g_connSlot>=0 && g_connSlot<NSLOT && hid[g_connSlot].ready()){
-    if(conn && millis()-lastSdlCompat>=250){
-      sendSdlCompatReports(false);
-      lastSdlCompat=millis();
-    }
     // 0x79 connection state: on edge, then repeated every 750ms ONLY until Steam reacts (its first OUTPUT/
     // settings write after the edge -- g_steamAliveMs). The real puck sends 0x79 ONCE, edge-triggered; the old
     // unconditional forever-resend could re-trigger Steam's connect handling (connect chime) every 750ms
@@ -372,7 +320,6 @@ void SteamPuckController::task(){
     if (conn!=usbConn || (conn && !steamAcked && millis()-last79>=750)){
       if (conn && !usbConn) connEdgeMs = millis();
       uint8_t st=conn?0x02:0x01; hid[g_connSlot].sendReport(0x79,&st,1); usbConn=conn; last79=millis();
-      if(conn) sendSdlCompatReports(false);
     } else if (conn && millis()-last7B>=2000){
       // 0x7B status, live-captured template. Byte 8 is the controller->puck signal strength as signed dBm
       // (capture showed 0xDD = -35; replaying it verbatim is why Steam pinned -35dBm forever) -- patch in the
@@ -391,7 +338,6 @@ void SteamPuckController::task(){
         s7b[8]=(uint8_t)(0u-(uint8_t)mag);
       }
       hid[g_connSlot].sendReport(0x7B,s7b,12); last7B=millis();
-      sendSdlCompatReports(false);
     }
   } else if(!conn) usbConn=false;
 }
