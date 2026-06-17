@@ -52,15 +52,22 @@ static Adafruit_USBD_HID g_swPro;
 static uint8_t g_swProReportMode=0;   // 0 until the host's subcommand 0x03 selects 0x30 -> THEN we stream input
 static const uint8_t JC_MAC[6]={0x7C,0xBB,0x8A,0x00,0x00,0x01};   // synthetic but stable controller MAC
 static uint16_t jcRumbleAmp(const uint8_t r[4]){
-  // Nintendo's 4-byte rumble encoding is frequency+amplitude packed through tables. For translation to the
-  // Steam controller, use the amplitude-bearing fields directly and scale them into a 16-bit motor speed.
-  if((r[0]==0x00 && r[1]==0x01 && r[2]==0x40 && r[3]==0x40) || (r[0]==0x00 && r[1]==0x00 && r[2]==0x01 && r[3]==0x40)) return 0;
-  uint16_t amp = ((uint16_t)(r[1] & 0xFE) << 8) | r[3];
-  return amp ? amp : 0x0800;
+  // Nintendo packs a high band (r[0],r[1]) and low band (r[2],r[3]) of frequency+amplitude. We only need a
+  // magnitude for the Steam motor, so pull the two amplitude fields: HF amp = r[1]>>1, LF amp = r[3]&0x3F.
+  // Every canonical idle/neutral frame -- 00 01 40 40, 00 00 01 40, and all-zero -- decodes to 0 this way, so a
+  // steady idle rumble stream maps to "off" instead of latching the motor on. NO forced floor: 0 amplitude -> 0.
+  uint8_t hf = r[1] >> 1;          // high-band amplitude (neutral 0x01 -> 0)
+  uint8_t lf = r[3] & 0x3F;        // low-band amplitude  (neutral 0x40 -> 0)
+  uint8_t a  = hf > lf ? hf : lf;  // 0..0x7F
+  return (uint16_t)a << 9;         // scale to ~16-bit motor speed
 }
 static void jcRumble(const uint8_t* p, uint16_t pn){
   if(pn<9) return;                       // [timer][left rumble x4][right rumble x4]
-  hapticSteamRumble(jcRumbleAmp(p+1), jcRumbleAmp(p+5));
+  uint16_t lo=jcRumbleAmp(p+1), hi=jcRumbleAmp(p+5);
+  static uint16_t lastLo=0, lastHi=0;
+  if(lo==lastLo && hi==lastHi) return;   // only relay on change: the Switch streams rumble every frame, so
+  lastLo=lo; lastHi=hi;                  // re-sending unchanged values would flood the RF relay and loop the motor
+  hapticSteamRumble(lo, hi);
 }
 static int jcStick12(int16_t v, bool inv){   // steam int16 (center 0) -> 12-bit (center 0x800), clamped
   int a = 2048 + (inv ? -((int)v>>4) : ((int)v>>4));
@@ -107,12 +114,16 @@ static void switchProBuild(uint8_t out[63]){
   jcInputPrefix(out);
   for(int k=0;k<3;k++){
     int o=12+k*12;
-    out[o+0]=g_in.ax&0xFF; out[o+1]=g_in.ax>>8;
-    out[o+2]=g_in.ay&0xFF; out[o+3]=g_in.ay>>8;
-    out[o+4]=g_in.az&0xFF; out[o+5]=g_in.az>>8;
-    out[o+6]=g_in.gx&0xFF; out[o+7]=g_in.gx>>8;
-    out[o+8]=g_in.gy&0xFF; out[o+9]=g_in.gy>>8;
-    out[o+10]=g_in.gz&0xFF; out[o+11]=g_in.gz>>8;
+    // Accel and gyro must share one axis convention or the Switch's gyro+gravity fusion reads a pure pitch as
+    // diagonal motion. The Steam IMU has X/Y transposed vs the Pro Controller frame, so swap X<->Y on BOTH
+    // sensors (Z/yaw unchanged): accel X<-ay, accel Y<-ax to match the gyro swap below.
+    out[o+0]=g_in.ay&0xFF; out[o+1]=g_in.ay>>8;     // accel X <- g_in.ay
+    out[o+2]=g_in.ax&0xFF; out[o+3]=g_in.ax>>8;     // accel Y <- g_in.ax
+    out[o+4]=g_in.az&0xFF; out[o+5]=g_in.az>>8;     // accel Z
+    int16_t gpitch = (int16_t)(-(int16_t)g_in.gy);  // pitch sense is inverted vs the Switch frame -> negate
+    out[o+6]=gpitch&0xFF; out[o+7]=(gpitch>>8)&0xFF; // gyro X (pitch) <- -g_in.gy
+    out[o+8]=g_in.gx&0xFF; out[o+9]=g_in.gx>>8;     // gyro Y (roll)  <- g_in.gx
+    out[o+10]=g_in.gz&0xFF; out[o+11]=g_in.gz>>8;   // gyro Z (yaw)
   }
 }
 // --- Canonical factory SPI dumps the host reads for calibration. Neutral IMU + centered sticks so a fresh
@@ -245,14 +256,14 @@ static void jcSet(uint8_t rid, hid_report_type_t type, uint8_t const* b, uint16_
 
 void SwitchProController::begin(){
   USBDevice.setID(0x057E, 0x2009);
-  USBDevice.setDeviceVersion(0x0211);   // bumped from 0x0210 for the added wake-mouse interface (Windows caches config by VID:PID:bcdDevice)
+  USBDevice.setDeviceVersion(0x0212);   // bumped from 0x0211 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
   USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
   USBDevice.setProductDescriptor("Pro Controller");
   jcBuildStickCal();
   g_swPro.enableOutEndpoint(true);
   g_swPro.setReportCallback(NULL, jcSet);   // answer the Nintendo USB handshake + subcommands (else Steam never binds it)
   g_swPro.setReportDescriptor(SWPRO_HID_DESC, sizeof SWPRO_HID_DESC);
-  g_swPro.setPollInterval(4);
+  g_swPro.setPollInterval(1);   // 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
   g_swPro.begin();
 }
 void SwitchProController::task(){
