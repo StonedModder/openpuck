@@ -92,6 +92,8 @@
         <div class="stat logonly"><div class="k">Poll period act/want</div><div class="v" id="stPollPer">—</div></div>
         <div class="stat"><div class="k">Build (git)</div><div class="v" id="stBuild">—</div></div>
       </div>
+      <p class="note" style="margin-top:8px"><strong>IMU (raw):</strong> <span id="stImu" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
+        Raw SC2 accel (before scaling). This controller is a ±2 g sensor (~16384 = 1 g); the Switch report divides it by 4 to present the genuine ±8 g (4096 = 1 g) scale so the console's gravity-correction engages and the gyro stops drifting.</p>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
       <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
         <span class="note" style="flex:1">If the controller's haptics get stuck/buzzing, this re-inits them (same as pressing Steam).</span>
@@ -120,10 +122,8 @@
 
     <div class="card">
       <h2>Switch Pro motion</h2>
-      <div class="row"><label>Report rate</label>
-        <button id="swRate">66 Hz</button>
-        <span class="note" style="flex:1">66 Hz matches a real Pro Controller (no gyro drift). 120 Hz is lower-latency but may reintroduce slow gyro drift on some consoles.</span>
-      </div>
+      <div class="row"><label>Report rate</label><select id="swRate"></select></div>
+      <p class="note" style="margin:0 0 6px">120 Hz (default) is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback. Full rate (~250 Hz) is lowest-latency but non-genuine — use only if your console tolerates it.</p>
       <div class="row"><label>Gyro scale</label><select id="swGyro"></select></div>
       <p class="note">Gyro sensitivity multiplier for Switch Pro mode (1.0× = unchanged).</p>
     </div>
@@ -177,6 +177,11 @@ for(const sel of document.querySelectorAll("select.back")){
 }
 for(const sel of document.querySelectorAll("select.chord")){
   MODE_NAMES.forEach((n,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
+}
+// Switch Pro report-rate options (0=66Hz, 1=120Hz default, 2=full ~250Hz)
+{ const sel=document.getElementById("swRate");
+  for(const [lbl,v] of [["120 Hz (default)",1],["66 Hz (compatibility)",0],["Full rate (~250 Hz)",2]]){
+    const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
 // Switch Pro gyro-scale options (value = scale x10, so it fits in one byte)
 { const sel=document.getElementById("swGyro");
@@ -257,7 +262,7 @@ function applyBlob(p){
   // status
   const battery=(p.length>36?p[36]:0);                    // controller battery % (report 0x43); 0 = unknown
   const rumbleScale=(p.length>51?p[51]:200);              // rumble strength % (protocol v5+; older blob -> default)
-  const swPro120=(p.length>52?p[52]:0);                   // Switch Pro 120Hz toggle (protocol v6+)
+  const swProRate=(p.length>52?p[52]:1);                  // Switch Pro report rate 0/1/2 (protocol v6+; default 120Hz)
   const swGyro10=(p.length>53?p[53]:10);                  // Switch Pro gyro scale x10 (protocol v6+)
   const rssi=(p.length>37?p[37]:0);                       // RAW signal strength |dBm| (0 = no sample)
   $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
@@ -283,7 +288,13 @@ function applyBlob(p){
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
   { const sel=$("#qamMap"); if(document.activeElement!==sel) sel.value=qamMap; }
-  $("#swRate").textContent = swPro120? "120 Hz":"66 Hz"; $("#swRate").classList.toggle("active",!!swPro120);
+  // raw accelerometer diagnostic (protocol v7): 3x s16 LE at p[54..59]
+  if(p.length>=60){ const s16=(o)=>{ let v=p[o]|(p[o+1]<<8); return v>32767?v-65536:v; };
+    const ax=s16(54),ay=s16(56),az=s16(58);
+    const amag=Math.round(Math.sqrt(ax*ax+ay*ay+az*az));
+    $("#stImu").textContent = `a=(${ax}, ${ay}, ${az})  |a|=${amag}`;
+  }
+  { const sel=$("#swRate"); if(document.activeElement!==sel) sel.value=swProRate; }
   { const sel=$("#swGyro"); if(document.activeElement!==sel) sel.value=swGyro10; }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
 }
@@ -399,7 +410,7 @@ for(const sel of document.querySelectorAll("select.back")){
   sel.addEventListener("change", ()=>setField(5 + +sel.dataset.i, +sel.value));
 }
 $("#qamMap").addEventListener("change", ()=>setField(21, +$("#qamMap").value));
-$("#swRate").onclick=()=>{ const on=$("#swRate").classList.contains("active"); setField(23, on?0:1); };
+$("#swRate").addEventListener("change", ()=>setField(23, +$("#swRate").value));
 $("#swGyro").addEventListener("change", ()=>setField(24, +$("#swGyro").value));
 for(const sel of document.querySelectorAll("select.chord")){
   sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));

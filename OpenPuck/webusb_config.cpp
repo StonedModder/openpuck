@@ -4,6 +4,7 @@
 #include "rf_link.h"
 #include "haptics.h"
 #include "puck_hid.h"
+#include "triton.h"   // g_in raw IMU (diagnostic readout)
 #include "build_info.h"
 #include <Arduino.h>
 #include <string.h>
@@ -15,14 +16,14 @@ Adafruit_USBD_WebUSB usb_web;
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
-//                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10]
-#define WB_PAYLEN 54
+//                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
+#define WB_PAYLEN 60   // keep the blob under 64 bytes total (readBlob reads one 64-byte packet)
 static void webusbSendBlob(){
   if(!usb_web.connected()) return;
   bool up = (g_connSlot>=0 && (millis()-g_connReplyMs) < 300);
   uint8_t p[2+WB_PAYLEN];
   p[0]=0xA5; p[1]=WB_PAYLEN;
-  p[2]=6;                          // protocol version (6 = +swPro120/gyroScale; 5 = +rumbleScale; 4 = +battery/rssi/git)
+  p[2]=7;                          // protocol version (7 = +raw accel; 6 = +swPro120/gyroScale; 5 = +rumbleScale)
   p[3]=g_usbMode; p[4]=(uint8_t)g_mDiv; p[5]=(uint8_t)g_mFric; p[6]=g_qamMap; p[7]=g_abSwap;
   p[8]=g_back[0]; p[9]=g_back[1]; p[10]=g_back[2]; p[11]=g_back[3];
   p[12]=(g_connSlot>=0)?(uint8_t)g_connSlot:0xFF;
@@ -47,8 +48,9 @@ static void webusbSendBlob(){
   memset(&p[41],0,12);                                                 // 12B ASCII git hash, NUL-padded
   { const char* h=OPK_GIT_HASH; for(uint8_t i=0;i<12 && h[i];i++) p[41+i]=(uint8_t)h[i]; }
   p[53]=g_rumbleScale;                                                 // rumble strength % (protocol v5)
-  p[54]=g_swPro120;                                                    // Switch Pro 120Hz toggle (protocol v6)
+  p[54]=g_swProRate;                                                   // Switch Pro report rate 0=66/1=120/2=full (protocol v6)
   p[55]=g_swGyroScale10;                                               // Switch Pro gyro sensitivity x10 (protocol v6)
+  { int16_t a[3]={g_in.ax,g_in.ay,g_in.az}; memcpy(&p[56], a, 6); }    // raw accelerometer for scale diagnostics (protocol v7)
   usb_web.write(p,sizeof p); usb_web.flush();
 }
 #if OPK_LOG
@@ -121,7 +123,7 @@ void webusbPoll(){
           case 20: armDebugCdcNextBoot(); usb_web.flush(); delay(40); NVIC_SystemReset(); break;  // reboot once WITH the CDC serial console (puck mode), then auto-revert
           case 21: g_qamMap = v; break;   // QAM physical button remap code (0=default/unmapped)
           case 22: g_rumbleScale = v; break;   // rumble strength % (0=off, 100=1x, 200=double)
-          case 23: g_swPro120 = v?1:0; swProSaveCfg(); persist=false; break;   // Switch Pro report rate (0=66Hz,1=120Hz)
+          case 23: g_swProRate = (v<=2)?v:1; swProSaveCfg(); persist=false; break;   // Switch Pro report rate (0=66Hz,1=120Hz,2=full)
           case 24: g_swGyroScale10 = (v>=5&&v<=30)?v:10; swProSaveCfg(); persist=false; break;   // Switch Pro gyro scale x10
         }
         if(persist) saveCfg();
