@@ -71,8 +71,8 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 	case 0x09: // pairing info / MAC (20 incl id)
 		if (reqlen < 19)
 			return 0;
-        // MAC at kernel buf[1..6] = payload[0..5]
-		memcpy(buf, PS5_MAC,6);
+		// MAC at kernel buf[1..6] = payload[0..5]
+		memcpy(buf, PS5_MAC, 6);
 		return 19;
 	case 0x20: // firmware info (64 incl id)
 		if (reqlen < 63)
