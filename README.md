@@ -69,6 +69,7 @@ I have tested this software fairly extensively but I have limited resources. I o
 - Alan for not scalping and selling me this controller for $120
 - https://github.com/knflrpn/2wiCC for the Switch Pro controller mode help
 - Massive thanks to [u/Careful_Tune4744](https://www.reddit.com/user/Careful_Tune4744/) for latency testing as well as testing and giving feedback on the Switch Pro mode
+- Thanks to Lawstorant from a mutual discord server for constructive criticism of the repo's state
 
 # * Another note on LLM use
 I want nothing more than for there to be a fully human coded alternative to OpenPuck that's on par with or better in every way. I would love to stop working on OpenPuck.

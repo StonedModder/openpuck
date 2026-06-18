@@ -6,4 +6,4 @@
 // only in puck modes (clean controller modes drop CDC). See the parser in serial_console.cpp for the full map.
 #pragma once
 
-void serialConsolePoll();   // drain + dispatch CDC commands; call every loop()
+void serialConsolePoll(); // drain + dispatch CDC commands; call every loop()

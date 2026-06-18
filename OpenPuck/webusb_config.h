@@ -12,4 +12,4 @@
 
 extern Adafruit_USBD_WebUSB usb_web;
 
-void webusbPoll();   // drain host commands + reply; call every loop()
+void webusbPoll(); // drain host commands + reply; call every loop()

@@ -9,9 +9,9 @@
 #pragma once
 
 #if !defined(OPK_GIT_HASH) && defined(__has_include)
-#  if __has_include("git_version.h")
-#    include "git_version.h"
-#  endif
+#if __has_include("git_version.h")
+#include "git_version.h"
+#endif
 #endif
 
 #ifndef OPK_GIT_HASH

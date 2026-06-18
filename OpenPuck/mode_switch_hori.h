@@ -8,8 +8,8 @@
 #include "controllers.h"
 
 class SwitchHoriController : public IController {
-public:
-  void begin() override;
-  void task() override;
+    public:
+	void begin() override;
+	void task() override;
 };
 extern SwitchHoriController g_switchHori;

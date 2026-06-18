@@ -10,8 +10,8 @@
 #include "controllers.h"
 
 class SwitchProController : public IController {
-public:
-  void begin() override;
-  void task() override;
+    public:
+	void begin() override;
+	void task() override;
 };
 extern SwitchProController g_switchPro;

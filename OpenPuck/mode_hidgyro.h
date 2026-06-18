@@ -7,8 +7,8 @@
 #include "controllers.h"
 
 class HidGyroController : public IController {
-public:
-  void begin() override;
-  void task() override;
+    public:
+	void begin() override;
+	void task() override;
 };
 extern HidGyroController g_hidGyroCtl;

@@ -10,4 +10,5 @@
 #include <Adafruit_TinyUSB.h>
 #include <stdint.h>
 
-void rfLizard(const uint8_t* r, Adafruit_USBD_HID* mdev, Adafruit_USBD_HID* kdev, uint8_t mrid, uint8_t krid);
+void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
+	      Adafruit_USBD_HID *kdev, uint8_t mrid, uint8_t krid);

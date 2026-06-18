@@ -7,8 +7,8 @@
 #include "controllers.h"
 
 class Ps5Controller : public IController {
-public:
-  void begin() override;
-  void task() override;
+    public:
+	void begin() override;
+	void task() override;
 };
 extern Ps5Controller g_ps5Ctl;

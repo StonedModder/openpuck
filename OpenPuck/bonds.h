@@ -11,13 +11,20 @@
 #define NSLOT 4
 
 // per-slot state (record = [8 uuid][16 serial]) + per-interface response staging
-struct Slot { uint8_t rec[24]; bool used; uint8_t resp[63]; uint16_t resp_len; };
+struct Slot {
+	uint8_t rec[24];
+	bool used;
+	uint8_t resp[63];
+	uint16_t resp_len;
+};
 extern Slot g_slot[NSLOT];
 
-extern int           g_connSlot;     // bonded slot being polled (== the USB-connected slot); -1 = none
-extern unsigned long g_connReplyMs;  // millis of last RF reply (link-alive timestamp)
-extern volatile bool g_dirty;        // bonds changed -> flush to flash from loop()
-extern bool          g_pairing;
+// bonded slot being polled (== the USB-connected slot); -1 = none
+extern int g_connSlot;
+extern unsigned long
+	g_connReplyMs; // millis of last RF reply (link-alive timestamp)
+extern volatile bool g_dirty; // bonds changed -> flush to flash from loop()
+extern bool g_pairing;
 
 bool recEmpty(const uint8_t *r);
 void loadBonds();
