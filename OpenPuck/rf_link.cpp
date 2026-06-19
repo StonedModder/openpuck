@@ -4,8 +4,10 @@
 #include "config.h"
 #include "triton.h"
 #include "haptics.h"
+#include "rf_diag.h"
 #include "controllers.h"
 #include "status_led.h"
+#include "identity.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -64,6 +66,86 @@ static uint32_t g_connRx = 0;
 static unsigned long g_lastSessBeacon = 0, g_lastDisc = 0;
 static unsigned long g_lastStream = 0;
 
+static bool rfPairingSlotActive(int slot)
+{
+	return g_pairing && slot >= 0 && slot < NSLOT &&
+	       (uint8_t)slot == g_pairingSlot;
+}
+
+static uint8_t *rfSlotRecordForTx(int slot)
+{
+	if (slot >= 0 && slot < NSLOT && g_slot[slot].used)
+		return g_slot[slot].rec;
+	if (rfPairingSlotActive(slot))
+		return g_pairingRecord;
+	return nullptr;
+}
+
+static void rfPairingSeedRecord()
+{
+	if (g_pairingRecord[0] || g_pairingRecord[1] || g_pairingRecord[2] ||
+	    g_pairingRecord[3])
+		return;
+	uint32_t a = NRF_FICR->DEVICEID[0] ^ 0x13572468u ^
+		     ((uint32_t)millis() << 8);
+	uint32_t b = NRF_FICR->DEVICEID[1] ^ 0x24681357u ^ micros();
+	memcpy(g_pairingRecord + 0, &a, 4);
+	memcpy(g_pairingRecord + 4, &b, 4);
+	memset(g_pairingRecord + 8, 0, 16);
+	memcpy(g_pairingRecord + 8, g_unit,
+	       strlen(g_unit) < 16 ? strlen(g_unit) : 16);
+}
+
+static bool rfMaybeCapturePairingBond(int slot, uint8_t rxlen)
+{
+	if (!rfPairingSlotActive(slot) || !(NRF_RADIO->CRCSTATUS & 1) || rxlen < 12)
+		return false;
+	g_pairingState = PAIR_SEEN;
+	const uint8_t *payload = rfrx + 2;
+	int plen = rxlen;
+	int serial_at = -1;
+	for (int i = 0; i + 1 < plen; i++) {
+		if (payload[i] == 'F' && payload[i + 1] == 'X') {
+			serial_at = i;
+			break;
+		}
+	}
+	if (serial_at < 8 || serial_at + 4 > plen)
+		return false;
+	uint8_t rec[24];
+	memset(rec, 0, sizeof rec);
+	memcpy(rec, payload + serial_at - 8, 8);
+	int serial_n = plen - serial_at;
+	if (serial_n > 16)
+		serial_n = 16;
+	memcpy(rec + 8, payload + serial_at, serial_n);
+	if (recEmpty(rec) || !rec[8])
+		return false;
+	memcpy(g_slot[g_pairingSlot].rec, rec, 24);
+	g_slot[g_pairingSlot].used = true;
+	g_dirty = true;
+	memcpy(g_pairingRecord, rec, 24);
+	g_pairingState = PAIR_BONDED;
+	rfRespondStop();
+	if (Serial.availableForWrite() > 80) {
+		Serial.printf("# pairing bonded slot=%u serial=", g_pairingSlot);
+		for (int i = 8; i < 24 && rec[i]; i++)
+			Serial.write(rec[i]);
+		Serial.println();
+	}
+	return true;
+}
+
+static int rfPreferredConnSlot()
+{
+	if (rfPairingSlotActive((int)g_pairingSlot) && g_slot[g_pairingSlot].used)
+		return g_pairingSlot;
+	for (int s = 0; s < NSLOT; s++)
+		if (g_slot[s].used)
+			return s;
+	return -1;
+}
+
 // HOST FRAME the bonded controller waits for (IBEX FUN_00019000 verify: b[0]=0x12, b[5]=0xE1, b[6..10]=
 // proteus_uuid, b[10..14]=ibex_uuid). Built like PROTEUS FUN_00027e9a. Sent on the shared rendezvous addr;
 // the controller filters by the uuids in the payload, then connects.
@@ -73,10 +155,14 @@ static unsigned long g_lastStream = 0;
 // the controller always learns the unique address to connect on.
 static void rfHostFrameOnce(int slot, bool discovery)
 {
-	if (slot < 0 || slot >= NSLOT || !g_slot[slot].used)
+	if (slot < 0 || slot >= NSLOT)
 		return;
+	uint8_t *rec = rfSlotRecordForTx(slot);
+	if (!rec)
+		return;
+	if (rfPairingSlotActive(slot))
+		rfPairingSeedRecord();
 	// [proteus_uuid 4][ibex_uuid 4][serial 16]
-	uint8_t *rec = g_slot[slot].rec;
 	// CRC-VALIDATED frame (decoded from real puck): ESB-DPL RAM = [LENGTH][S1=PID][payload(18)]. payload:
 	// [0]=0xE1, [1..5]=proteus_uuid LE, [5..9]=ibex_uuid LE, [9]=session channel, [10..13]=0, [13..17]=session
 	// base, [17]=session prefix. Radio auto-appends CRC16 0x11021.
@@ -137,6 +223,7 @@ static void rfHostFrameOnce(int slot, bool discovery)
 				Serial.printf("%02X ", rfrx[i]);
 			Serial.println();
 		}
+		rfMaybeCapturePairingBond(slot, len);
 	}
 	NRF_RADIO->TASKS_DISABLE = 1;
 	RWAIT_DISABLED();
@@ -519,12 +606,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 // controller connected on); the host-frame beacon runs in parallel as keepalive.
 static void rfConnStep()
 {
-	g_connSlot = -1;
-	for (int s = 0; s < NSLOT; s++)
-		if (g_slot[s].used) {
-			g_connSlot = s;
-			break;
-		}
+	g_connSlot = rfPreferredConnSlot();
 	// need a bonded slot (session established by host frame)
 	if (g_connSlot < 0)
 		return;
@@ -601,6 +683,8 @@ void rfLinkTask()
 	// drops the reply rate from ~210/s to ~38/s. Paused only during the post-disconnect cooldown so a controller
 	// that's powering off isn't immediately re-woken/reconnected.
 	if (g_rfHost && millis() - g_connCooldown > 2500) {
+		if (g_pairing && g_rfRespond)
+			goto skip_pairing_beacons;
 		bool connNow =
 			(g_connSlot >= 0 && millis() - g_connReplyMs < 300);
 		// session keepalive on the clean channel: every loop while connecting (fast), every 25ms once connected
@@ -608,17 +692,26 @@ void rfLinkTask()
 		if (millis() - g_lastSessBeacon >= (connNow ? 25u : 0u)) {
 			g_lastSessBeacon = millis();
 			g_rfCh = g_sessCh;
-			for (int s = 0; s < NSLOT; s++)
-				rfHostFrameOnce(s, false);
+			if (g_pairing) {
+				rfHostFrameOnce(g_pairingSlot, false);
+			} else {
+				for (int s = 0; s < NSLOT; s++)
+					rfHostFrameOnce(s, false);
+			}
 		}
 		// discovery beacon on ch2 (where a searching controller looks): every loop when down, occasionally when up
 		if (millis() - g_lastDisc >= (connNow ? 200u : 0u)) {
 			g_lastDisc = millis();
-			g_rfCh = 2;
-			for (int s = 0; s < NSLOT; s++)
-				rfHostFrameOnce(s, true);
+			g_rfCh = g_pairing ? g_pairingChannel : 2;
+			if (g_pairing) {
+				rfHostFrameOnce(g_pairingSlot, true);
+			} else {
+				for (int s = 0; s < NSLOT; s++)
+					rfHostFrameOnce(s, true);
+			}
 		}
 	}
+skip_pairing_beacons:
 	if (g_connOn && millis() - g_connCooldown > 2500) {
 		rfConnStep();
 	} // connected-mode: poll controller, read input
@@ -627,6 +720,19 @@ void rfLinkTask()
 		static bool wasRfConn = false;
 		bool nowRfConn =
 			(g_connSlot >= 0 && millis() - g_connReplyMs < 300);
+		if (g_pairing) {
+			if (nowRfConn && g_connSlot == g_pairingSlot) {
+				g_pairingState = PAIR_CONNECTED;
+				g_pairing = false;
+				rfRespondStop();
+				Serial.printf("# pairing complete slot=%d\n",
+					      g_connSlot);
+			} else if (g_pairingState == PAIR_SEARCHING &&
+				   millis() - g_pairingSinceMs > 30000u) {
+				g_pairingState = PAIR_TIMEOUT;
+				rfRespondStop();
+			}
+		}
 		if (nowRfConn && !wasRfConn && USBDevice.suspended()) {
 			USBDevice.remoteWakeup();
 			ledWakePulse();

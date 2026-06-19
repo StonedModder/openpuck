@@ -8,6 +8,11 @@ int g_connSlot = -1;
 unsigned long g_connReplyMs = 0;
 volatile bool g_dirty = false;
 bool g_pairing = false;
+uint8_t g_pairingSlot = 0;
+uint8_t g_pairingState = PAIR_IDLE;
+uint8_t g_pairingChannel = 2;
+uint8_t g_pairingRecord[24] = { 0 };
+unsigned long g_pairingSinceMs = 0;
 
 #define BOND_FILE "/bonds.bin"
 

@@ -1,6 +1,7 @@
 #include "rf_diag.h"
 #include "radio.h"
 #include "bonds.h"
+#include "identity.h"
 #include <Arduino.h>
 #include <string.h>
 
@@ -28,6 +29,21 @@ static uint32_t g_sniffN = 0;
 static uint8_t g_sbase[4] = { 0, 0, 0, 0 }, g_sprefix = 0;
 static uint8_t g_schan[3] = { 78, 2, 80 };
 static uint8_t g_schi = 0;
+
+static void seedPairingRecordIfNeeded()
+{
+	if (g_pairingRecord[0] || g_pairingRecord[1] || g_pairingRecord[2] ||
+	    g_pairingRecord[3])
+		return;
+	uint32_t a = NRF_FICR->DEVICEID[0] ^ 0x13572468u ^
+		     ((uint32_t)millis() << 8);
+	uint32_t b = NRF_FICR->DEVICEID[1] ^ 0x24681357u ^ micros();
+	memcpy(g_pairingRecord + 0, &a, 4);
+	memcpy(g_pairingRecord + 4, &b, 4);
+	memset(g_pairingRecord + 8, 0, 16);
+	memcpy(g_pairingRecord + 8, g_unit,
+	       strlen(g_unit) < 16 ? strlen(g_unit) : 16);
+}
 
 // ===================== promiscuous raw capture (calibration only) =====================
 // Preamble-match on 0x55, fixed-length grab, no CRC. Catches any 2Mbit packet on a channel so we can read the
@@ -337,14 +353,23 @@ void rfBeaconOnce()
 static void buildHostTx()
 {
 	int slot = -1;
-	for (int i = 0; i < NSLOT; i++)
-		if (g_slot[i].used) {
-			slot = i;
-			break;
-		}
+	const uint8_t *rec = nullptr;
+	if (g_pairing && g_pairingSlot < NSLOT) {
+		slot = g_pairingSlot;
+		seedPairingRecordIfNeeded();
+		rec = g_pairingRecord;
+	}
+	if (!rec) {
+		for (int i = 0; i < NSLOT; i++)
+			if (g_slot[i].used) {
+				slot = i;
+				rec = g_slot[i].rec;
+				break;
+			}
+	}
 	memset(g_hostTx, 0, sizeof g_hostTx);
 	g_hostLen = 0;
-	if (slot < 0)
+	if (slot < 0 || !rec)
 		return;
 	// S0LEN=1 RAM layout: [0]=S0=0x12, [1]=LENGTH, raw RAM offsets validated by controller.
 	memset(g_hostTx, 0, sizeof g_hostTx);
@@ -352,11 +377,11 @@ static void buildHostTx()
 	g_hostTx[1] = 0x20;
 	g_hostTx[3] = 1;
 	g_hostTx[5] = 0xE1;
-	memcpy(g_hostTx + 6, g_slot[slot].rec, 4);
-	memcpy(g_hostTx + 10, g_slot[slot].rec + 4, 4);
-	g_hostTx[0xe] = 2;
-	memcpy(g_hostTx + 0x12, g_rfBase, 4);
-	g_hostTx[0x16] = g_rfPrefix;
+	memcpy(g_hostTx + 6, rec, 4);
+	memcpy(g_hostTx + 10, rec + 4, 4);
+	g_hostTx[0xe] = g_sessCh;
+	memcpy(g_hostTx + 0x12, g_sessBase, 4);
+	g_hostTx[0x16] = g_sessPrefix;
 	g_hostLen = 0x22;
 }
 void rfRespondStart()
@@ -373,6 +398,13 @@ void rfRespondStart()
 	Serial.printf(
 		"# RESPOND mode: RX ch2/91A2A793, reply host frame (len%d)\n",
 		g_hostLen);
+}
+void rfRespondStop()
+{
+	g_rfRespond = false;
+	NRF_RADIO->TASKS_DISABLE = 1;
+	RWAIT_DISABLED();
+	NRF_RADIO->EVENTS_DISABLED = 0;
 }
 static void rfRespondPoll()
 {

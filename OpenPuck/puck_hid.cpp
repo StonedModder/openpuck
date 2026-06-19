@@ -3,6 +3,7 @@
 #include "config.h"
 #include "identity.h"
 #include "haptics.h"
+#include "rf_diag.h"
 #include "rf_link.h"
 #include "triton.h"
 #include "mode_lizard.h"
@@ -181,6 +182,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	uint8_t cmd = b[0], len = (n > 1) ? b[1] : 0;
 	const uint8_t *pl = b + 2;
 	uint16_t pln = (n >= 2) ? n - 2 : 0;
+	uint16_t used = (len < pln) ? len : pln;
 
 	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
 	if (cmd >= 0x80 && cmd <= 0x89)
@@ -196,7 +198,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// capture EVERY relayed feature-1 command for the WebUSB capture view (haptics, LED SET_LED_COLOR,
 		// 0x87 settings, 0x9F power-off). Log shows cmd as "rid"; bytes start [cmd][len]...
 		hapLogAdd((uint8_t)slot, cmd, b, n);
-		bool haptic82 = (cmd == 0x82 && len <= pln);
+		bool haptic82 = (cmd == 0x82 && len <= used);
 
 		bool muted = g_resumeMs &&
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
@@ -208,7 +210,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.
-			uint8_t rl = (len <= pln) ? len : (uint8_t)pln;
+			uint8_t rl = (len <= used) ? len : (uint8_t)used;
 			if (len > RELAY_MAXP && Serial.availableForWrite() > 60)
 				Serial.printf(
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
@@ -237,7 +239,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp_len = 63;
 		break;
 	case 0xAE: {
-		uint8_t idx = pln > 0 ? pl[0] : 1;
+		uint8_t idx = used > 0 ? pl[0] : 1;
 		const char *s = (idx == 0) ? g_board :
 				(idx == 1) ? g_unit :
 					     "NA";
@@ -263,14 +265,37 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp_len = 63;
 		break;
 	case 0xAD:
-		g_pairing = (pln > 0 && pl[0] != 0);
-		Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
+		if (used > 0) {
+			g_pairing = (pl[0] != 0);
+			if (g_pairing) {
+				g_pairingSlot = (uint8_t)slot;
+				// Controller discovery is on the shared "ibex" rendezvous on channel 2.
+				// Keep the reported pairing channel fixed there so the GUI cannot steer pairing
+				// onto a channel the controller never scans.
+				g_pairingChannel = 2;
+				g_pairingState = PAIR_SEARCHING;
+				g_pairingSinceMs = millis();
+				memset(g_pairingRecord, 0,
+				       sizeof g_pairingRecord);
+				rfRespondStart();
+			} else {
+				g_pairingState = PAIR_IDLE;
+				rfRespondStop();
+			}
+			Serial.printf("# pairing %s slot=%u ch=%u\n",
+				      g_pairing ? "ON" : "off", g_pairingSlot,
+				      g_pairingChannel);
+		}
 		S.resp[0] = 0xAD;
-		S.resp[1] = 0;
+		S.resp[1] = 0x04;
+		S.resp[2] = g_pairing ? 1 : 0;
+		S.resp[3] = g_pairingState;
+		S.resp[4] = g_pairingSlot;
+		S.resp[5] = g_pairingChannel;
 		S.resp_len = 63;
 		break;
 	case 0xA2: // write/clear THIS interface's slot
-		if (len >= 24 && pln >= 24) {
+		if (len >= 24 && used >= 24) {
 			if (recEmpty(pl)) {
 				S.used = false;
 				memset(S.rec, 0, 24);
@@ -294,11 +319,23 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			memcpy(S.resp + 2, S.rec, 24);
 		S.resp_len = 63;
 		break;
+	case 0xF0: {
+		bool serialOnly = (used > 0 && pl[0] == 2);
+		S.resp[0] = 0xF0;
+		S.resp[1] = 0x01;
+		S.resp[2] = serialOnly ? 2 : 1;
+		S.resp_len = 63;
+		Serial.printf("# reboot to %s bootloader requested over HID\n",
+			      serialOnly ? "serial-dfu" : "uf2");
+		delay(20);
+		rebootToBootloader(serialOnly);
+		break;
+	}
 	default:
 		S.resp[0] = cmd;
 		S.resp[1] = len;
-		if (pln)
-			memcpy(S.resp + 2, pl, pln > 60 ? 60 : pln);
+		if (used)
+			memcpy(S.resp + 2, pl, used > 60 ? 60 : used);
 		S.resp_len = 63;
 		break;
 	}

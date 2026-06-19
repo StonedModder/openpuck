@@ -1,8 +1,12 @@
 #include "config.h"
 #include <Adafruit_LittleFS.h>
+#include <Arduino.h>
 #include <InternalFileSystem.h>
 #include <string.h>
 using namespace Adafruit_LittleFS_Namespace;
+
+extern void enterUf2Dfu(void);
+extern void enterSerialDfu(void);
 
 uint8_t g_usbMode = 0;
 bool g_xbox = false;
@@ -133,6 +137,15 @@ void armDebugCdcNextBoot()
 	g_debugCdc = 1;
 	saveCfg();
 } // next boot keeps CDC; loadCfg() consumes it after
+
+void rebootToBootloader(bool serialOnly)
+{
+	delay(20);
+	if (serialOnly)
+		enterSerialDfu();
+	else
+		enterUf2Dfu();
+}
 
 // FULL factory wipe: reformat the internal LittleFS, erasing cfg.bin (modes/tunables/chords) AND bonds.bin
 // (paired-controller record). Caller reboots: next boot finds no files and falls back to clean defaults, and

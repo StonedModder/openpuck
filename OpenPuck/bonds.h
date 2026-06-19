@@ -25,6 +25,21 @@ extern unsigned long
 	g_connReplyMs; // millis of last RF reply (link-alive timestamp)
 extern volatile bool g_dirty; // bonds changed -> flush to flash from loop()
 extern bool g_pairing;
+extern uint8_t g_pairingSlot;
+extern uint8_t g_pairingState;
+extern uint8_t g_pairingChannel;
+extern uint8_t g_pairingRecord[24];
+extern unsigned long g_pairingSinceMs;
+
+enum PairingState : uint8_t {
+	PAIR_IDLE = 0,
+	PAIR_SEARCHING = 1,
+	PAIR_SEEN = 2,
+	PAIR_BONDED = 3,
+	PAIR_CONNECTED = 4,
+	PAIR_TIMEOUT = 5,
+	PAIR_ERROR = 6,
+};
 
 bool recEmpty(const uint8_t *r);
 void loadBonds();

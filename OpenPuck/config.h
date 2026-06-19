@@ -76,6 +76,7 @@ extern uint8_t g_bootMode;
 // decision for THIS boot: true => keep CDC, skip the wake interface
 extern bool g_debugCdcThisBoot;
 void armDebugCdcNextBoot(); // persist the one-shot (caller reboots)
+void rebootToBootloader(bool serialOnly);
 
 // persisted, runtime-tunable config:
 extern int g_mDiv, g_mFric; // xbox/lizard mouse sensitivity divisor / friction%

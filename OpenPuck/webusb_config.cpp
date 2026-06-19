@@ -155,9 +155,10 @@ void webusbPoll()
 				break;
 			uint8_t op = buf[0];
 
-			// 0x05 carries a value byte; 0x0A carries a 3-byte magic
+			// 0x05 and 0x09 carry a value byte; 0x0A carries a 3-byte magic
 			uint8_t need = (op == 0x02)		  ? 3 :
-				       (op == 0x03 || op == 0x05) ? 2 :
+				       (op == 0x03 || op == 0x05 ||
+					op == 0x09)		  ? 2 :
 				       (op == 0x0A)		  ? 4 :
 								    1;
 			if (op < 0x01 || op > 0x0A) { // resync: drop one byte
@@ -187,6 +188,15 @@ void webusbPoll()
 			// trigger controller power-off (same path Steam 0x9F / host-suspend use)
 			else if (op == 0x08) {
 				hapticSendShutdown();
+			}
+
+			// reboot into bootloader/update mode:
+			//   0x09 0x01 -> UF2 bootloader
+			//   0x09 0x02 -> serial-only DFU
+			else if (op == 0x09) {
+				bool serialOnly = (buf[1] == 0x02);
+				usb_web.flush();
+				rebootToBootloader(serialOnly);
 			}
 
 			// factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.

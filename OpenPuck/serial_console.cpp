@@ -31,6 +31,12 @@ void serialConsolePoll()
 					"# done -- rebooting into clean defaults; re-pair the controller");
 				delay(40);
 				NVIC_SystemReset();
+			} else if (!strcmp(line, "BOOT-UF2")) {
+				Serial.println("# rebooting into UF2 bootloader...");
+				rebootToBootloader(false);
+			} else if (!strcmp(line, "BOOT-DFU")) {
+				Serial.println("# rebooting into serial DFU bootloader...");
+				rebootToBootloader(true);
 			} else if (line[0] == 'l')
 				rfListenStart();
 			else if (line[0] == 'B') {
